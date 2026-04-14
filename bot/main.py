@@ -32,8 +32,12 @@ async def main() -> None:
     dp.include_router(links.router)
     dp.include_router(callbacks.router)
 
-    logging.info("Bot started. Allowed users: %s", settings.ALLOWED_USER_IDS)
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    logging.info("Bot started. Allowed users: %s", settings.allowed_user_ids)
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types(),
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":

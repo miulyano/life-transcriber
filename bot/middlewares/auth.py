@@ -14,6 +14,6 @@ class AuthMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         user = event.from_user
-        if user is None or user.id not in settings.ALLOWED_USER_IDS:
+        if user is None or user.id not in settings.allowed_user_ids:
             return
         return await handler(event, data)

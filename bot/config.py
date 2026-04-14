@@ -1,4 +1,5 @@
-from pydantic import field_validator
+from functools import cached_property
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,18 +8,15 @@ class Settings(BaseSettings):
 
     BOT_TOKEN: str
     OPENAI_API_KEY: str
-    ALLOWED_USER_IDS: list[int]
+    ALLOWED_USER_IDS: str  # comma-separated list, parsed via property
     LONG_TEXT_THRESHOLD: int = 2000
     WHISPER_MODEL: str = "whisper-1"
     GPT_MODEL: str = "gpt-4o"
     TEMP_DIR: str = "/tmp/transcriber"
 
-    @field_validator("ALLOWED_USER_IDS", mode="before")
-    @classmethod
-    def parse_user_ids(cls, v: str | list) -> list[int]:
-        if isinstance(v, str):
-            return [int(uid.strip()) for uid in v.split(",") if uid.strip()]
-        return v
+    @cached_property
+    def allowed_user_ids(self) -> list[int]:
+        return [int(uid.strip()) for uid in self.ALLOWED_USER_IDS.split(",") if uid.strip()]
 
 
 settings = Settings()

@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - transcriber_tmp:/tmp/transcriber
+
+volumes:
+  transcriber_tmp:

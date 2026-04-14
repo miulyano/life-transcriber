@@ -1,0 +1,61 @@
+import asyncio
+import os
+import uuid
+from pathlib import Path
+
+
+async def download_audio(url: str, output_dir: str) -> str:
+    """Download audio from a URL (YouTube, RuTube, VK, etc.) via yt-dlp."""
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
+
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp",
+        "--no-playlist",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        "--output", out_path,
+        "--no-progress",
+        "--quiet",
+        url,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"yt-dlp failed (code {proc.returncode}): {stderr.decode().strip()}"
+        )
+
+    # yt-dlp replaces %(ext)s — find the resulting file
+    base = Path(out_path).with_suffix("")
+    parent = Path(out_path).parent
+    candidates = list(parent.glob(f"{base.name}.*"))
+    if not candidates:
+        raise RuntimeError("yt-dlp did not produce an output file")
+    return str(candidates[0])
+
+
+async def extract_audio(video_path: str, output_dir: str) -> str:
+    """Extract audio track from a video file using FFmpeg."""
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.mp3")
+
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vn",
+        "-ar", "16000",
+        "-ac", "1",
+        "-acodec", "mp3",
+        out_path,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await proc.communicate()
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed with code {proc.returncode}")
+    return out_path

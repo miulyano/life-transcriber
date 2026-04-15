@@ -27,7 +27,10 @@ async def handle_link(message: Message) -> None:
         await reply_text_or_file(message, text)
     except RuntimeError as e:
         error_msg = str(e)
-        if "yt-dlp" in error_msg:
+        if error_msg.startswith("yandex-disk:"):
+            detail = error_msg.split(":", 1)[1].strip()
+            await message.reply(detail[:1].upper() + detail[1:] if detail else "Ошибка Яндекс Диска")
+        elif "yt-dlp" in error_msg:
             await message.reply("Не удалось скачать видео с этой платформы. Попробуй другую ссылку.")
         else:
             await message.reply(f"Ошибка: {error_msg}")

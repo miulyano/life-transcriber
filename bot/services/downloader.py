@@ -3,9 +3,19 @@ import os
 import uuid
 from pathlib import Path
 
+from bot.services.yandex_disk import download_from_yandex_disk, is_yandex_disk_url
+
 
 async def download_audio(url: str, output_dir: str) -> str:
-    """Download audio from a URL (YouTube, RuTube, VK, etc.) via yt-dlp."""
+    """Download audio from a URL (YouTube, RuTube, VK, Yandex Disk, etc.)."""
+    if is_yandex_disk_url(url):
+        raw_path = await download_from_yandex_disk(url, output_dir)
+        try:
+            return await extract_audio(raw_path, output_dir)
+        finally:
+            if os.path.exists(raw_path):
+                os.unlink(raw_path)
+
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
 

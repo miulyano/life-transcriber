@@ -11,6 +11,7 @@
 - 🔗 **Ссылки на видео** — YouTube, RuTube, VK Video, Vimeo и [многие другие платформы](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (всё, что поддерживает `yt-dlp`)
 - ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
 - 📝 **Краткий конспект** — inline-кнопка под транскрипцией, генерирует тезисы через GPT-4o
+- ⏳ **Интерактивный статус** — во время обработки присылается одно сообщение с анимированным прогресс-баром и фазами («Скачиваю…» → «Транскрибирую…»); сообщение удаляется, когда приходит транскрипция, или превращается в текст ошибки, если что-то сломалось
 
 **Формат ответа:**
 - Короткий текст (≤ 2000 символов) — приходит прямо в чате
@@ -157,7 +158,9 @@ life-transcriber/
 │   │   ├── yandex_disk.py       # Публичное API Яндекс Диска
 │   │   └── downloader.py        # Диспетчер: Яндекс Диск / yt-dlp + FFmpeg
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
-│   └── utils/text.py            # reply_text_or_file + кэш хэшей с TTL 10 мин
+│   └── utils/
+│       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин
+│       └── progress.py          # ProgressReporter: один статус с анимированным баром
 ├── tests/                       # pytest
 ├── Dockerfile
 ├── docker-compose.yml

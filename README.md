@@ -9,6 +9,7 @@
 - 🎥 **Видео-кружочки** (video notes) — транскрибация аудиодорожки
 - 📼 **Видео-файлы** (`.mp4`, `.mov` и т.п., в том числе пересланные) — извлечение аудио + транскрибация
 - 🔗 **Ссылки на видео** — YouTube, RuTube, VK Video, Vimeo и [многие другие платформы](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (всё, что поддерживает `yt-dlp`)
+- ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
 - 📝 **Краткий конспект** — inline-кнопка под транскрипцией, генерирует тезисы через GPT-4o
 
 **Формат ответа:**
@@ -99,6 +100,7 @@ Run polling for bot @YourBotName
 - Запиши **кружочек** → получи текст
 - Отправь **видео** (как файл или пересланное) → получи текст
 - Вставь **ссылку на видео** → получи текст
+- Вставь **публичную ссылку на аудио/видео в Яндекс Диске** → получи текст
 - Под любой транскрипцией нажми **«📝 Краткий конспект»** → получи тезисы
 
 ## Деплой на VPS
@@ -152,7 +154,8 @@ life-transcriber/
 │   ├── services/
 │   │   ├── transcriber.py       # OpenAI Whisper + автосплит файлов > 24MB
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект
-│   │   └── downloader.py        # yt-dlp + FFmpeg
+│   │   ├── yandex_disk.py       # Публичное API Яндекс Диска
+│   │   └── downloader.py        # Диспетчер: Яндекс Диск / yt-dlp + FFmpeg
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
 │   └── utils/text.py            # reply_text_or_file + кэш хэшей с TTL 10 мин
 ├── tests/                       # pytest

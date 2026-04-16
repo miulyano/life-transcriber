@@ -2,7 +2,13 @@ import hashlib
 import time
 from typing import Optional
 
-from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from bot.config import settings
 
@@ -36,21 +42,38 @@ def _evict_expired() -> None:
         del _text_cache[k]
 
 
-def summary_keyboard(text_hash: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def build_keyboard(text: str, text_hash: str, send_as_file: bool) -> Optional[InlineKeyboardMarkup]:
+    rows = []
+
+    if not send_as_file:
+        if len(text) <= 256:
+            copy_btn = InlineKeyboardButton(
+                text="📋 Скопировать текст",
+                copy_text=CopyTextButton(text=text),
+            )
+        else:
+            copy_btn = InlineKeyboardButton(
+                text="📋 Скопировать текст",
+                callback_data=f"copy:{text_hash}",
+            )
+        rows.append([copy_btn])
+
+    if len(text) >= settings.MIN_SUMMARY_LEN:
+        rows.append(
             [InlineKeyboardButton(text="📝 Краткий конспект", callback_data=f"summary:{text_hash}")]
-        ]
-    )
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 async def reply_text_or_file(message: Message, text: str) -> None:
     text_hash = _store_text(text)
-    keyboard = summary_keyboard(text_hash)
 
     if len(text) <= settings.LONG_TEXT_THRESHOLD:
+        keyboard = build_keyboard(text, text_hash, send_as_file=False)
         await message.reply(text, reply_markup=keyboard)
     else:
+        keyboard = build_keyboard(text, text_hash, send_as_file=True)
         file_bytes = text.encode("utf-8")
         await message.reply_document(
             BufferedInputFile(file_bytes, filename="transcript.txt"),

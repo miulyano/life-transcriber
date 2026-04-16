@@ -3,8 +3,16 @@ services:
     build: .
     env_file: .env
     restart: unless-stopped
+    depends_on:
+      - cobalt
     volumes:
       - transcriber_tmp:/tmp/transcriber
+
+  cobalt:
+    image: ghcr.io/imputnet/cobalt:11
+    restart: unless-stopped
+    environment:
+      API_URL: "http://cobalt:9000"
 
 volumes:
   transcriber_tmp:

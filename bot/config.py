@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "whisper-1"
     GPT_MODEL: str = "gpt-4o"
     TEMP_DIR: str = "/tmp/transcriber"
+    COBALT_API_URL: str = "http://cobalt:9000"
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:

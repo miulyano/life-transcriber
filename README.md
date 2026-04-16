@@ -9,6 +9,7 @@
 - 🎥 **Видео-кружочки** (video notes) — транскрибация аудиодорожки
 - 📼 **Видео-файлы** (`.mp4`, `.mov` и т.п., в том числе пересланные) — извлечение аудио + транскрибация
 - 🔗 **Ссылки на видео** — YouTube, RuTube, VK Video, Vimeo и [многие другие платформы](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (всё, что поддерживает `yt-dlp`)
+- 📸 **Instagram Reels/видео** — публичные ссылки вида `https://www.instagram.com/reel/...` и `/p/...` скачиваются через встроенный [Cobalt](https://github.com/imputnet/cobalt) (авторизация в Instagram не требуется)
 - ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
 - 📝 **Краткий конспект** — inline-кнопка под транскрипцией, генерирует тезисы через GPT-4o
 - ⏳ **Интерактивный статус** — во время обработки присылается одно сообщение с анимированным прогресс-баром и фазами («Скачиваю…» → «Транскрибирую…»); сообщение удаляется, когда приходит транскрипция, или превращается в текст ошибки, если что-то сломалось
@@ -26,6 +27,7 @@
 - [aiogram 3.x](https://github.com/aiogram/aiogram) — async Telegram Bot framework
 - [OpenAI API](https://platform.openai.com/docs/api-reference) — Whisper + GPT-4o
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание с видео-платформ
+- [Cobalt](https://github.com/imputnet/cobalt) — скачивание видео из Instagram (self-hosted Docker-sidecar)
 - [FFmpeg](https://ffmpeg.org/) — извлечение аудио из видео
 - Docker + Docker Compose
 
@@ -75,6 +77,7 @@ ALLOWED_USER_IDS=123456789,987654321
 - `WHISPER_MODEL=whisper-1` — модель транскрибации
 - `GPT_MODEL=gpt-4o` — модель для конспекта
 - `TEMP_DIR=/tmp/transcriber` — где хранить временные файлы
+- `COBALT_API_URL=http://cobalt:9000` — адрес Cobalt API для Instagram (по умолчанию Docker-DNS)
 
 ### 4. Запусти через Docker
 
@@ -102,6 +105,7 @@ Run polling for bot @YourBotName
 - Отправь **видео** (как файл или пересланное) → получи текст
 - Вставь **ссылку на видео** → получи текст
 - Вставь **публичную ссылку на аудио/видео в Яндекс Диске** → получи текст
+- Вставь **ссылку на публичный Instagram Reel или видео-пост** → получи текст
 - Под любой транскрипцией нажми **«📝 Краткий конспект»** → получи тезисы
 
 ## Деплой на VPS
@@ -155,8 +159,9 @@ life-transcriber/
 │   ├── services/
 │   │   ├── transcriber.py       # OpenAI Whisper + автосплит файлов > 24MB
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект
+│   │   ├── instagram.py         # Instagram Reels через Cobalt API
 │   │   ├── yandex_disk.py       # Публичное API Яндекс Диска
-│   │   └── downloader.py        # Диспетчер: Яндекс Диск / yt-dlp + FFmpeg
+│   │   └── downloader.py        # Диспетчер: Яндекс Диск / Instagram / yt-dlp + FFmpeg
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
 │   └── utils/
 │       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин

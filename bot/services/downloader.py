@@ -3,6 +3,7 @@ import os
 import uuid
 from pathlib import Path
 
+from bot.services.instagram import download_from_instagram, is_instagram_url
 from bot.services.yandex_disk import download_from_yandex_disk, is_yandex_disk_url
 
 
@@ -10,6 +11,14 @@ async def download_audio(url: str, output_dir: str) -> str:
     """Download audio from a URL (YouTube, RuTube, VK, Yandex Disk, etc.)."""
     if is_yandex_disk_url(url):
         raw_path = await download_from_yandex_disk(url, output_dir)
+        try:
+            return await extract_audio(raw_path, output_dir)
+        finally:
+            if os.path.exists(raw_path):
+                os.unlink(raw_path)
+
+    if is_instagram_url(url):
+        raw_path = await download_from_instagram(url, output_dir)
         try:
             return await extract_audio(raw_path, output_dir)
         finally:

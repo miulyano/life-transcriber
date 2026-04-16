@@ -26,6 +26,11 @@ def _friendly_error(error_msg: str) -> str:
         if not detail:
             return "Ошибка Яндекс Диска"
         return detail[:1].upper() + detail[1:]
+    if error_msg.startswith("facebook:"):
+        detail = error_msg.split(":", 1)[1].strip()
+        if not detail:
+            return "Ошибка при обработке Facebook"
+        return detail[:1].upper() + detail[1:]
     if "yt-dlp" in error_msg:
         return "Не удалось скачать видео с этой платформы. Попробуй другую ссылку."
     return f"Ошибка: {error_msg}"

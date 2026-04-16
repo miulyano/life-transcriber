@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     ALLOWED_USER_IDS: str  # comma-separated list, parsed via property
     LONG_TEXT_THRESHOLD: int = 2000
+    MIN_SUMMARY_LEN: int = 500
     WHISPER_MODEL: str = "whisper-1"
     GPT_MODEL: str = "gpt-4o"
     TEMP_DIR: str = "/tmp/transcriber"

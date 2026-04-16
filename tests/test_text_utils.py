@@ -6,9 +6,9 @@ from bot.utils import text as text_mod
 from bot.utils.text import (
     CACHE_TTL,
     _store_text,
+    build_keyboard,
     get_cached_text,
     reply_text_or_file,
-    summary_keyboard,
 )
 
 
@@ -69,11 +69,34 @@ def test_ttl_not_expired_yet(monkeypatch):
     assert get_cached_text(h) == "still fresh"
 
 
-def test_summary_keyboard_callback_data():
-    kb = summary_keyboard("abc123")
-    button = kb.inline_keyboard[0][0]
-    assert button.callback_data == "summary:abc123"
-    assert "конспект" in button.text.lower()
+def test_build_keyboard_summary_button():
+    # Long enough text to trigger summary button, sent inline
+    text = "x" * 600
+    h = _store_text(text)
+    kb = build_keyboard(text, h, send_as_file=False)
+    # First row: copy, second row: summary
+    summary_btn = kb.inline_keyboard[1][0]
+    assert summary_btn.callback_data == f"summary:{h}"
+    assert "конспект" in summary_btn.text.lower()
+
+
+def test_build_keyboard_no_summary_on_short_text():
+    # Short text should not have a summary button
+    text = "x" * 100
+    h = _store_text(text)
+    kb = build_keyboard(text, h, send_as_file=False)
+    all_callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row if btn.callback_data]
+    assert not any(cb.startswith("summary:") for cb in all_callbacks)
+
+
+def test_build_keyboard_no_copy_on_file():
+    # File mode should have no copy button
+    text = "x" * 2500
+    h = _store_text(text)
+    kb = build_keyboard(text, h, send_as_file=True)
+    all_callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row if btn.callback_data]
+    assert not any(cb.startswith("copy:") for cb in all_callbacks)
+    assert any(cb.startswith("summary:") for cb in all_callbacks)
 
 
 async def test_short_text_sent_inline():
@@ -130,18 +153,18 @@ async def test_threshold_boundary_file():
     message.reply.assert_not_called()
 
 
-async def test_reply_caches_text_with_summary_keyboard():
-    """After reply_text_or_file, the text is retrievable from cache via keyboard hash."""
+async def test_reply_caches_text_via_copy_button():
+    """After reply_text_or_file, text is retrievable via copy button hash (inline text > 256 chars)."""
     message = MagicMock()
     message.reply = AsyncMock()
 
-    text = "cached text to check"
+    text = "x" * 300  # > 256 so copy uses callback_data, short enough for inline
     await reply_text_or_file(message, text)
 
-    # Keyboard was passed with callback_data "summary:<hash>"
     kwargs = message.reply.await_args.kwargs
     keyboard = kwargs["reply_markup"]
-    callback_data = keyboard.inline_keyboard[0][0].callback_data
-    hash_from_cb = callback_data.split(":", 1)[1]
-
+    # First row is copy button with callback_data "copy:<hash>"
+    copy_cb = keyboard.inline_keyboard[0][0].callback_data
+    assert copy_cb.startswith("copy:")
+    hash_from_cb = copy_cb.split(":", 1)[1]
     assert get_cached_text(hash_from_cb) == text

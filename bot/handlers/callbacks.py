@@ -1,3 +1,4 @@
+import html
 from typing import Optional
 
 from aiogram import F, Router
@@ -44,3 +45,21 @@ async def handle_summary(callback: CallbackQuery) -> None:
         await callback.message.reply(f"📝 Краткий конспект:\n\n{summary}")
     except Exception as e:
         await callback.message.reply(f"Ошибка при генерации конспекта: {e}")
+
+
+@router.callback_query(F.data.startswith("copy:"))
+async def handle_copy(callback: CallbackQuery) -> None:
+    text_hash = callback.data.split(":", 1)[1]
+    text = get_cached_text(text_hash)
+
+    if text is None:
+        text = await _extract_text_from_message(callback)
+        if text is not None:
+            _store_text(text)
+
+    if text is None:
+        await callback.answer("Текст недоступен. Отправь аудио заново.", show_alert=True)
+        return
+
+    await callback.answer()
+    await callback.message.reply(f"<code>{html.escape(text)}</code>", parse_mode="HTML")

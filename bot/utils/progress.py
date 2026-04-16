@@ -74,6 +74,7 @@ class ProgressReporter:
 
         self._tick: int = 0
         self._progress: Optional[tuple[int, int]] = None
+        self._fraction: Optional[float] = None
         self._last_rendered: Optional[str] = None
         self._stopped: bool = False
         self._resolved: bool = False  # finish() or fail() was called
@@ -102,10 +103,17 @@ class ProgressReporter:
     async def set_phase(self, label: str) -> None:
         self._label = label
         self._progress = None
+        self._fraction = None
         await self._do_edit(self._compose())
 
     async def set_progress(self, current: int, total: int) -> None:
         self._progress = (current, total)
+        self._fraction = None
+        await self._do_edit(self._compose())
+
+    async def set_progress_fraction(self, fraction: float) -> None:
+        self._fraction = max(0.0, min(1.0, fraction))
+        self._progress = None
         await self._do_edit(self._compose())
 
     async def finish(self) -> None:
@@ -136,6 +144,10 @@ class ProgressReporter:
             )
 
     def _compose(self) -> str:
+        if self._fraction is not None:
+            cells = round(self._fraction * BAR_WIDTH)
+            bar = render_determinate(cells, BAR_WIDTH)
+            return f"{self._label}\n{bar}"
         if self._progress is not None:
             current, total = self._progress
             bar = render_determinate(current, total)

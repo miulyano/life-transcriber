@@ -41,7 +41,11 @@ async def handle_link(message: Message) -> None:
                 await reporter.fail(_friendly_error(str(e)))
                 return
             await reporter.set_phase("Транскрибирую…")
-            text = await transcribe(audio_path, on_progress=reporter.set_progress)
+            text = await transcribe(
+                audio_path,
+                on_progress=reporter.set_progress,
+                on_progress_fraction=reporter.set_progress_fraction,
+            )
         finally:
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)

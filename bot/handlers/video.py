@@ -25,7 +25,11 @@ async def _process(message: Message, bot: Bot, file_id: str, suffix: str) -> Non
             await reporter.set_phase("Извлекаю аудио…")
             audio_path = await extract_audio(video_path, settings.TEMP_DIR)
             await reporter.set_phase("Транскрибирую…")
-            text = await transcribe(audio_path, on_progress=reporter.set_progress)
+            text = await transcribe(
+                audio_path,
+                on_progress=reporter.set_progress,
+                on_progress_fraction=reporter.set_progress_fraction,
+            )
         finally:
             if os.path.exists(video_path):
                 os.unlink(video_path)

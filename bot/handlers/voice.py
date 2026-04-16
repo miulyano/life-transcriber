@@ -24,7 +24,11 @@ async def _handle(message: Message, bot: Bot, file_id: str, suffix: str, label: 
     async with ProgressReporter(message, label) as reporter:
         dest = await _download_tg_file(bot, file_id, suffix)
         try:
-            text = await transcribe(dest, on_progress=reporter.set_progress)
+            text = await transcribe(
+            dest,
+            on_progress=reporter.set_progress,
+            on_progress_fraction=reporter.set_progress_fraction,
+        )
         finally:
             if os.path.exists(dest):
                 os.unlink(dest)

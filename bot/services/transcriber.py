@@ -1,5 +1,7 @@
 import asyncio
 import os
+import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -10,7 +12,13 @@ from bot.config import settings
 MAX_WHISPER_BYTES = 24 * 1024 * 1024  # 24 MB (Whisper limit is 25 MB)
 CHUNK_DURATION_SECONDS = 600  # 10 minutes per chunk
 
+# Fake-progress tuning for non-chunked Whisper calls (no real progress signal).
+FAKE_RATE_BYTES_PER_SEC = 200_000
+FAKE_TICK_SECONDS = 0.5
+FAKE_CEILING = 0.95
+
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+FractionCallback = Callable[[float], Awaitable[None]]
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
@@ -18,6 +26,7 @@ client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 async def transcribe(
     audio_path: str,
     on_progress: Optional[ProgressCallback] = None,
+    on_progress_fraction: Optional[FractionCallback] = None,
 ) -> str:
     file_size = os.path.getsize(audio_path)
     if file_size > MAX_WHISPER_BYTES:
@@ -34,7 +43,40 @@ async def transcribe(
             if on_progress is not None:
                 await on_progress(i + 1, total)
         return " ".join(parts)
-    return await _transcribe_file(audio_path)
+
+    if on_progress_fraction is None:
+        return await _transcribe_file(audio_path)
+
+    expected_seconds = max(3.0, file_size / FAKE_RATE_BYTES_PER_SEC)
+    done = asyncio.Event()
+    task = asyncio.create_task(
+        _fake_progress_loop(done, on_progress_fraction, expected_seconds)
+    )
+    try:
+        result = await _transcribe_file(audio_path)
+    finally:
+        done.set()
+        with suppress(Exception):
+            await task
+    await on_progress_fraction(1.0)
+    return result
+
+
+async def _fake_progress_loop(
+    done: asyncio.Event,
+    on_progress_fraction: FractionCallback,
+    expected_seconds: float,
+) -> None:
+    start = time.monotonic()
+    while not done.is_set():
+        elapsed = time.monotonic() - start
+        fraction = min(FAKE_CEILING, elapsed / expected_seconds)
+        with suppress(Exception):
+            await on_progress_fraction(fraction)
+        try:
+            await asyncio.wait_for(done.wait(), timeout=FAKE_TICK_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _transcribe_file(path: str) -> str:

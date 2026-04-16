@@ -13,6 +13,10 @@ from bot.utils.progress import (
     render_indeterminate,
 )
 
+# ---------------------------------------------------------------------------
+# Fraction-mode tests (set_progress_fraction)
+# ---------------------------------------------------------------------------
+
 
 # --- Pure rendering ---
 
@@ -217,3 +221,83 @@ async def test_finish_falls_back_to_edit_when_delete_fails():
     # delete was attempted once, then edit "✅ Готово" was sent as fallback
     assert len(bot.deleted) == 1
     assert any("✅ Готово" in e["text"] for e in bot.edits)
+
+
+# ---------------------------------------------------------------------------
+# set_progress_fraction
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fraction_zero_all_empty_no_counter():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress_fraction(0.0)
+        await r.finish()
+    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    assert fraction_edits
+    last = fraction_edits[-1]["text"]
+    assert FILLED not in last
+    assert EMPTY * BAR_WIDTH in last
+
+
+@pytest.mark.asyncio
+async def test_fraction_one_all_filled_no_counter():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress_fraction(1.0)
+        await r.finish()
+    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    assert fraction_edits
+    last = fraction_edits[-1]["text"]
+    assert EMPTY not in last
+    assert FILLED * BAR_WIDTH in last
+
+
+@pytest.mark.asyncio
+async def test_fraction_half_five_cells_no_counter():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress_fraction(0.5)
+        await r.finish()
+    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    assert fraction_edits
+    last = fraction_edits[-1]["text"]
+    assert last.count(FILLED) == 5
+    assert last.count(EMPTY) == 5
+    assert "/" not in last
+
+
+@pytest.mark.asyncio
+async def test_fraction_overrides_progress_counter():
+    """Switching from set_progress (with counter) to set_progress_fraction (no counter)."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress(3, 10)        # determinate with counter
+        await r.set_progress_fraction(0.7)  # switch to fraction — no counter
+        await r.finish()
+    last_edit = bot.edits[-1]["text"] if bot.edits else ""
+    # last meaningful edit before finish should be fraction (no slash)
+    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    assert fraction_edits
+    assert fraction_edits[-1]["text"].count(FILLED) == round(0.7 * BAR_WIDTH)
+
+
+@pytest.mark.asyncio
+async def test_set_phase_resets_fraction_to_indeterminate():
+    """After set_phase, bar must be indeterminate again (no counter, runner moves)."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress_fraction(0.8)
+        await r.set_phase("Новая фаза…")
+        await r.finish()
+    # edit right after set_phase should be indeterminate: no slash, exactly 1 filled cell
+    phase_edits = [e for e in bot.edits if "Новая фаза" in e["text"]]
+    assert phase_edits
+    first_phase = phase_edits[0]["text"]
+    assert "/" not in first_phase
+    assert first_phase.count(FILLED) == 1  # single runner, position 0

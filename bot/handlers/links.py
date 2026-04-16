@@ -16,6 +16,11 @@ URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
 def _friendly_error(error_msg: str) -> str:
+    if error_msg.startswith("instagram:"):
+        detail = error_msg.split(":", 1)[1].strip()
+        if not detail:
+            return "Ошибка при обработке Instagram"
+        return detail[:1].upper() + detail[1:]
     if error_msg.startswith("yandex-disk:"):
         detail = error_msg.split(":", 1)[1].strip()
         if not detail:

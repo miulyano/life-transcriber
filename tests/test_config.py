@@ -31,3 +31,4 @@ def test_defaults():
     assert s.WHISPER_MODEL == "whisper-1"
     assert s.GPT_MODEL == "gpt-4o"
     assert s.TEMP_DIR == "/tmp/transcriber"
+    assert s.COBALT_API_URL == "http://cobalt:9000"

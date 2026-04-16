@@ -4,6 +4,8 @@ import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 
 from bot.config import settings
@@ -19,10 +21,24 @@ async def main() -> None:
 
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
 
-    bot = Bot(
-        token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    if settings.TELEGRAM_API_URL:
+        session = AiohttpSession(
+            api=TelegramAPIServer.from_base(
+                settings.TELEGRAM_API_URL, is_local=True
+            )
+        )
+        bot = Bot(
+            token=settings.BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            session=session,
+        )
+        logging.info("Using local Bot API: %s", settings.TELEGRAM_API_URL)
+    else:
+        bot = Bot(
+            token=settings.BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+
     dp = Dispatcher()
 
     dp.message.middleware(AuthMiddleware())

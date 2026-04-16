@@ -31,3 +31,19 @@ def test_defaults():
     assert s.WHISPER_MODEL == "whisper-1"
     assert s.GPT_MODEL == "gpt-4o"
     assert s.TEMP_DIR == "/tmp/transcriber"
+    assert s.TELEGRAM_API_URL is None
+
+
+def test_telegram_api_url_parsed():
+    s = Settings(
+        BOT_TOKEN="t",
+        OPENAI_API_KEY="k",
+        ALLOWED_USER_IDS="111",
+        TELEGRAM_API_URL="http://tg-api:8081",
+    )
+    assert s.TELEGRAM_API_URL == "http://tg-api:8081"
+
+
+def test_telegram_api_url_default_is_none():
+    s = _make("111")
+    assert s.TELEGRAM_API_URL is None

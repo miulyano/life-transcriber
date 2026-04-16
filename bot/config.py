@@ -1,4 +1,5 @@
 from functools import cached_property
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "whisper-1"
     GPT_MODEL: str = "gpt-4o"
     TEMP_DIR: str = "/tmp/transcriber"
+    TELEGRAM_API_URL: Optional[str] = None
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:

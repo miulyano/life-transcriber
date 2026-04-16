@@ -1,10 +1,35 @@
 services:
+  tg-api:
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    command: --local
+    restart: unless-stopped
+    volumes:
+      - tg-api-data:/var/lib/telegram-bot-api
+
+  tg-api-cleanup:
+    image: alpine:latest
+    restart: unless-stopped
+    volumes:
+      - tg-api-data:/var/lib/telegram-bot-api
+    command: >
+      sh -c "while true;
+             do find /var/lib/telegram-bot-api -mindepth 3 -type f -mtime +3 -delete 2>/dev/null;
+             sleep 86400;
+             done"
+
   bot:
     build: .
     env_file: .env
     restart: unless-stopped
+    depends_on:
+      - tg-api
     volumes:
       - transcriber_tmp:/tmp/transcriber
+      - tg-api-data:/var/lib/telegram-bot-api
 
 volumes:
   transcriber_tmp:
+  tg-api-data:

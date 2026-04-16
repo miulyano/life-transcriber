@@ -7,7 +7,7 @@
 
 - 🎙 **Голосовые сообщения** — транскрибация в текст
 - 🎥 **Видео-кружочки** (video notes) — транскрибация аудиодорожки
-- 📼 **Видео-файлы** (`.mp4`, `.mov` и т.п., в том числе пересланные) — извлечение аудио + транскрибация
+- 📼 **Видео-файлы** (`.mp4`, `.mov` и т.п., в том числе пересланные) — извлечение аудио + транскрибация; файлы до ~2 GB (с локальным Bot API)
 - 🔗 **Ссылки на видео** — YouTube, RuTube, VK Video, Vimeo и [многие другие платформы](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (всё, что поддерживает `yt-dlp`)
 - ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
 - 📝 **Краткий конспект** — inline-кнопка под транскрипцией, генерирует тезисы через GPT-4o
@@ -27,6 +27,7 @@
 - [OpenAI API](https://platform.openai.com/docs/api-reference) — Whisper + GPT-4o
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание с видео-платформ
 - [FFmpeg](https://ffmpeg.org/) — извлечение аудио из видео
+- [telegram-bot-api (local)](https://github.com/tdlib/telegram-bot-api) — локальный сервер Bot API, снимает лимит 20 MB на скачивание файлов
 - Docker + Docker Compose
 
 ## Как развернуть свой
@@ -56,6 +57,12 @@ cd life-transcriber
 2. Он пришлёт твой ID (число типа `123456789`)
 3. Повтори для каждого, кому даёшь доступ
 
+**Telegram api_id и api_hash** (для локального Bot API, снимает лимит 20 MB):
+1. Открой https://my.telegram.org/auth и войди под своим номером телефона
+2. Перейди в «API development tools»
+3. Нажми «Create application» — название и платформа произвольные
+4. Сохрани `App api_id` (число) и `App api_hash` (hex-строка)
+
 ### 3. Настрой `.env`
 
 ```bash
@@ -68,6 +75,11 @@ cp .env.example .env
 BOT_TOKEN=1234567890:ABCdef...
 OPENAI_API_KEY=sk-proj-...
 ALLOWED_USER_IDS=123456789,987654321
+
+# Локальный Bot API (файлы до ~2 GB)
+TELEGRAM_API_ID=12345678
+TELEGRAM_API_HASH=abc123def456...
+TELEGRAM_API_URL=http://tg-api:8081
 ```
 
 Опциональные переменные (дефолты в `.env.example`):
@@ -82,6 +94,8 @@ ALLOWED_USER_IDS=123456789,987654321
 docker compose up -d --build
 ```
 
+При первом запуске `tg-api` инициализируется ~15–20 сек, затем бот поднимается автоматически.
+
 Проверь логи:
 ```bash
 docker compose logs -f
@@ -89,9 +103,10 @@ docker compose logs -f
 
 Должно быть:
 ```
-Bot started. Allowed users: [...]
-Start polling
-Run polling for bot @YourBotName
+tg-api  | Local Bot API server started
+bot     | Bot started. Allowed users: [...]
+bot     | Start polling
+bot     | Run polling for bot @YourBotName
 ```
 
 ### 5. Используй
@@ -99,7 +114,7 @@ Run polling for bot @YourBotName
 Напиши своему боту в Telegram:
 - Запиши **голосовое** → получи текст
 - Запиши **кружочек** → получи текст
-- Отправь **видео** (как файл или пересланное) → получи текст
+- Отправь **видео** (как файл или пересланное, до ~2 GB) → получи текст
 - Вставь **ссылку на видео** → получи текст
 - Вставь **публичную ссылку на аудио/видео в Яндекс Диске** → получи текст
 - Под любой транскрипцией нажми **«📝 Краткий конспект»** → получи тезисы
@@ -128,6 +143,18 @@ docker compose up -d --build
 git pull && docker compose up -d --build
 ```
 
+### Диск и очистка
+
+Локальный Bot API сохраняет принятые файлы в volume `tg-api-data`. Сервис
+`tg-api-cleanup` автоматически удаляет файлы старше 3 дней раз в сутки.
+
+Полная ручная очистка (только пока бот остановлен):
+```bash
+docker compose down
+docker volume rm life-transcriber_tg-api-data
+docker compose up -d
+```
+
 ## Тесты
 
 ```bash
@@ -138,14 +165,14 @@ pytest -v
 ```
 
 Покрыта ключевая логика: парсинг конфига, whitelist-авторизация, кэш текстов с TTL,
-порог inline/file, URL regex.
+порог inline/file, URL regex, прогресс-бар, транскрибер.
 
 ## Структура проекта
 
 ```
 life-transcriber/
 ├── bot/
-│   ├── main.py                  # Точка входа, инициализация Dispatcher
+│   ├── main.py                  # Точка входа; поддержка локального Bot API
 │   ├── config.py                # Pydantic Settings (читает .env)
 │   ├── handlers/
 │   │   ├── voice.py             # voice + video_note (кружочки)
@@ -163,7 +190,7 @@ life-transcriber/
 │       └── progress.py          # ProgressReporter: один статус с анимированным баром
 ├── tests/                       # pytest
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml           # 3 сервиса: tg-api, tg-api-cleanup, bot
 ├── requirements.txt
 ├── requirements-dev.txt
 └── .env.example
@@ -177,8 +204,10 @@ life-transcriber/
 
 - `.env` с реальными ключами **никогда** не коммитится (уже в `.gitignore`)
 - В репозиторий попадает только `.env.example` с плейсхолдерами
+- `api_id` и `api_hash` привязаны к твоему Telegram-аккаунту — храни в `.env`, не публикуй
 - Доступ к боту — только по whitelist Telegram user ID в `ALLOWED_USER_IDS`
 - Пользователи вне whitelist не получают ответа (бот молчит, не раскрывает своё существование)
+- Порт `tg-api` (8081) не публикуется наружу — доступен только внутри docker-сети
 
 ## Лицензия
 

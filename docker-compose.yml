@@ -7,12 +7,20 @@ services:
       - cobalt
     volumes:
       - transcriber_tmp:/tmp/transcriber
+    deploy:
+      resources:
+        limits:
+          memory: 220m
 
   cobalt:
     image: ghcr.io/imputnet/cobalt:11
     restart: unless-stopped
     environment:
       API_URL: "http://cobalt:9000"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   webapp:
     build:
@@ -25,6 +33,10 @@ services:
     networks:
       - default
       - caddy_net
+    deploy:
+      resources:
+        limits:
+          memory: 400m
 
 networks:
   caddy_net:

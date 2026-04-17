@@ -59,7 +59,7 @@ async def handle_link(message: Message) -> None:
         finally:
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
+        if text is not None:
+            await reporter.set_phase("Отправляю результат…")
+            await reply_text_or_file(message, text)
         await reporter.finish()
-
-    if text is not None:
-        await reply_text_or_file(message, text)

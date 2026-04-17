@@ -256,6 +256,20 @@ async def test_fraction_one_all_filled_no_counter():
 
 
 @pytest.mark.asyncio
+async def test_fraction_below_one_does_not_render_full_bar():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress_fraction(0.95)
+        await r.finish()
+    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    assert fraction_edits
+    last = fraction_edits[-1]["text"]
+    assert last.count(FILLED) == BAR_WIDTH - 1
+    assert last.count(EMPTY) == 1
+
+
+@pytest.mark.asyncio
 async def test_fraction_half_five_cells_no_counter():
     bot = FakeBot()
     msg = FakeMessage(bot)

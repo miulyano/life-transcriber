@@ -25,16 +25,17 @@ async def _handle(message: Message, bot: Bot, file_id: str, suffix: str, label: 
         dest = await _download_tg_file(bot, file_id, suffix)
         try:
             text = await transcribe(
-            dest,
-            on_progress=reporter.set_progress,
-            on_progress_fraction=reporter.set_progress_fraction,
-        )
+                dest,
+                on_progress=reporter.set_progress,
+                on_progress_fraction=reporter.set_progress_fraction,
+            )
         finally:
             if os.path.exists(dest):
                 os.unlink(dest)
+        if text is not None:
+            await reporter.set_phase("Отправляю результат…")
+            await reply_text_or_file(message, text)
         await reporter.finish()
-    if text is not None:
-        await reply_text_or_file(message, text)
 
 
 @router.message(F.voice)

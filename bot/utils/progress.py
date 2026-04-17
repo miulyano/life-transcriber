@@ -146,6 +146,8 @@ class ProgressReporter:
     def _compose(self) -> str:
         if self._fraction is not None:
             cells = round(self._fraction * BAR_WIDTH)
+            if self._fraction < 1.0:
+                cells = min(cells, BAR_WIDTH - 1)
             bar = render_determinate(cells, BAR_WIDTH)
             return f"{self._label}\n{bar}"
         if self._progress is not None:

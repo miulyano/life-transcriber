@@ -5,6 +5,7 @@ from pathlib import Path
 
 from bot.services.facebook import download_from_facebook, is_facebook_url
 from bot.services.instagram import download_from_instagram, is_instagram_url
+from bot.services.media import prepare_audio_for_transcription
 from bot.services.yandex_disk import download_from_yandex_disk, is_yandex_disk_url
 
 
@@ -68,22 +69,4 @@ async def download_audio(url: str, output_dir: str) -> str:
 
 async def extract_audio(video_path: str, output_dir: str) -> str:
     """Extract audio track from a video file using FFmpeg."""
-    os.makedirs(output_dir, exist_ok=True)
-    out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.mp3")
-
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-vn",
-        "-ar", "16000",
-        "-ac", "1",
-        "-acodec", "mp3",
-        out_path,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.communicate()
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed with code {proc.returncode}")
-    return out_path
+    return await prepare_audio_for_transcription(video_path, output_dir)

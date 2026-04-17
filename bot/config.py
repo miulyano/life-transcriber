@@ -1,4 +1,5 @@
 from functools import cached_property
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,7 @@ class Settings(BaseSettings):
     GPT_MODEL: str = "gpt-4o"
     TEMP_DIR: str = "/tmp/transcriber"
     COBALT_API_URL: str = "http://cobalt:9000"
+    WEBAPP_URL: Optional[str] = None  # https://transcriber.<domain> — enables bot menu button
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:

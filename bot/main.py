@@ -5,6 +5,7 @@ import os
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import MenuButtonDefault, MenuButtonWebApp, WebAppInfo
 
 from bot.config import settings
 from bot.handlers import callbacks, links, video, voice
@@ -31,6 +32,17 @@ async def main() -> None:
     dp.include_router(video.router)
     dp.include_router(links.router)
     dp.include_router(callbacks.router)
+
+    if settings.WEBAPP_URL:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="📤 Загрузить файл",
+                web_app=WebAppInfo(url=settings.WEBAPP_URL),
+            )
+        )
+        logging.info("Mini app menu button set: %s", settings.WEBAPP_URL)
+    else:
+        await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
 
     logging.info("Bot started. Allowed users: %s", settings.allowed_user_ids)
     await dp.start_polling(

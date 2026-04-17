@@ -14,5 +14,22 @@ services:
     environment:
       API_URL: "http://cobalt:9000"
 
+  webapp:
+    build:
+      context: .
+      dockerfile: webapp/Dockerfile
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - webapp_tmp:/tmp/transcriber
+    networks:
+      - default
+      - caddy_net
+
+networks:
+  caddy_net:
+    external: true
+
 volumes:
   transcriber_tmp:
+  webapp_tmp:

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <title>Транскрибатор</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font: 16px system-ui, -apple-system, sans-serif;
+      padding: 24px 20px;
+      margin: 0;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+    }
+    h2 {
+      margin: 0 0 20px;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .hint {
+      font-size: 14px;
+      color: var(--tg-theme-hint-color, #888);
+      margin-bottom: 16px;
+      line-height: 1.4;
+    }
+    input[type="file"] {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      border: 1.5px dashed var(--tg-theme-hint-color, #ccc);
+      border-radius: 10px;
+      background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+      color: var(--tg-theme-text-color, #000);
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: var(--tg-theme-button-color, #2481cc);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #status {
+      margin-top: 18px;
+      font-size: 15px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    #status.success { color: #27ae60; }
+    #status.error { color: #e74c3c; }
+  </style>
+</head>
+<body>
+  <h2>Загрузить аудио или видео</h2>
+  <p class="hint">Выбери файл — он уйдёт на транскрибацию. Результат придёт прямо в чат бота.</p>
+  <input type="file" id="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.mp4,.mov,.mkv,.webm">
+  <button id="upload">Отправить</button>
+  <div id="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

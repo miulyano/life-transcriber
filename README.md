@@ -12,6 +12,7 @@
 - 📸 **Instagram Reels/видео** — публичные ссылки вида `https://www.instagram.com/reel/...` и `/p/...` скачиваются через встроенный [Cobalt](https://github.com/imputnet/cobalt) (авторизация в Instagram не требуется)
 - 📘 **Публичные видео и Reels Facebook** — ссылки `facebook.com/reel/…`, `facebook.com/watch?v=…`, `fb.watch/…` скачиваются через тот же встроенный Cobalt (авторизация не требуется)
 - ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
+- 📤 **Mini App для больших файлов** — кнопка «Загрузить файл» в меню бота открывает Telegram WebView, куда можно загрузить аудио или видео любого размера (нет ограничения 20 MB от Bot API). Требует HTTPS-домена и настройки shared Caddy на VPS (см. ниже)
 - 📝 **Краткий конспект** — inline-кнопка под транскрипцией, генерирует тезисы через GPT-4o
 - ⏳ **Интерактивный статус** — во время обработки присылается одно сообщение с анимированным прогресс-баром и фазами («Скачиваю…» → «Транскрибирую…»); сообщение удаляется, когда приходит транскрипция, или превращается в текст ошибки, если что-то сломалось
 
@@ -30,6 +31,9 @@
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание с видео-платформ
 - [Cobalt](https://github.com/imputnet/cobalt) — скачивание видео из Instagram (self-hosted Docker-sidecar)
 - [FFmpeg](https://ffmpeg.org/) — извлечение аудио из видео
+- [FastAPI](https://fastapi.tiangolo.com/) — веб-сервис для Telegram Mini App (загрузка файлов)
+- [Caddy](https://caddyserver.com/) — shared reverse proxy на VPS с автоматическим TLS (Let's Encrypt)
+- [Telegram Mini Apps](https://core.telegram.org/bots/webapps) — WebView для загрузки файлов без ограничений Bot API
 - Docker + Docker Compose
 
 ## Как развернуть свой
@@ -79,6 +83,7 @@ ALLOWED_USER_IDS=123456789,987654321
 - `GPT_MODEL=gpt-4o` — модель для конспекта
 - `TEMP_DIR=/tmp/transcriber` — где хранить временные файлы
 - `COBALT_API_URL=http://cobalt:9000` — адрес Cobalt API для Instagram (по умолчанию Docker-DNS)
+- `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «📤 Загрузить файл» (требует shared Caddy на VPS, см. ниже)
 
 ### 4. Запусти через Docker
 
@@ -109,6 +114,24 @@ Run polling for bot @YourBotName
 - Вставь **ссылку на публичный Instagram Reel или видео-пост** → получи текст
 - Вставь **ссылку на публичное видео или Reel из Facebook** (`facebook.com`, `fb.watch`) → получи текст
 - Под любой транскрипцией нажми **«📝 Краткий конспект»** → получи тезисы
+- Нажми кнопку **«📤 Загрузить файл»** в меню бота → загрузи любой файл без ограничений → получи текст (требует `WEBAPP_URL` и shared Caddy)
+
+## Mini App: загрузка файлов без ограничений
+
+Telegram Bot API позволяет боту скачивать файлы только до 20 MB. Mini App
+обходит это: файл уходит браузером напрямую на наш HTTPS-сервер, минуя Bot API.
+
+**Как работает:**
+1. Пользователь тапает «📤 Загрузить файл» → открывается WebView
+2. Выбирает файл (аудио или видео любого размера)
+3. Файл уходит POST-запросом на `/api/upload` с HMAC-подписью Telegram
+4. Backend проверяет подпись и whitelist, транскрибирует через Whisper
+5. Результат приходит в обычный чат бота
+
+**Что нужно для активации:**
+- Домен с A-записью на VPS
+- Shared Caddy развёрнут на VPS (см. «VPS: shared Caddy»)
+- `WEBAPP_URL=https://transcriber.yourdomain.com` в `.env`
 
 ## Деплой на VPS
 
@@ -134,6 +157,89 @@ docker compose up -d --build
 git pull && docker compose up -d --build
 ```
 
+## VPS: shared Caddy (reverse proxy для всех проектов)
+
+Caddy не входит в этот репозиторий — он живёт на VPS как общая инфраструктура.
+Это позволяет держать несколько проектов (ботов, приложений) на разных поддоменах
+одного домена, без конфликта за порты 80/443.
+
+### Первый раз: развернуть Caddy
+
+```bash
+# На VPS (один раз):
+mkdir -p /opt/caddy && cd /opt/caddy
+docker network create caddy_net
+```
+
+`/opt/caddy/docker-compose.yml`:
+```yaml
+services:
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [caddy_net]
+
+networks:
+  caddy_net:
+    external: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+```
+
+`/opt/caddy/Caddyfile` (пример с одним проектом):
+```
+{
+    email your@email.com
+}
+
+transcriber.yourdomain.com {
+    encode gzip
+    request_body { max_size 10GB }
+    reverse_proxy webapp:8000
+}
+```
+
+```bash
+cd /opt/caddy && docker compose up -d
+```
+
+Firewall: `ufw allow 80 && ufw allow 443`.
+
+### Добавить route для этого проекта
+
+После деплоя life-transcriber добавь в `/opt/caddy/Caddyfile`:
+```
+transcriber.yourdomain.com {
+    encode gzip
+    request_body { max_size 10GB }
+    reverse_proxy webapp:8000
+}
+```
+
+Hot reload без даунтайма:
+```bash
+cd /opt/caddy && docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+Caddy автоматически получит Let's Encrypt cert при первом обращении к домену.
+
+> **Важно:** DNS A-запись должна указывать напрямую на IP VPS (не через Cloudflare
+> proxy — иначе загрузка больших файлов будет ограничена Cloudflare). Используй
+> режим «DNS only» (серая тучка) в Cloudflare, если используешь его для DNS.
+
+### Добавление следующего проекта
+
+Просто добавь блок в `/opt/caddy/Caddyfile` и сделай reload — Caddy видит все
+контейнеры, подключённые к `caddy_net`, по их Docker-именам.
+
 ## Тесты
 
 ```bash
@@ -144,20 +250,20 @@ pytest -v
 ```
 
 Покрыта ключевая логика: парсинг конфига, whitelist-авторизация, кэш текстов с TTL,
-порог inline/file, URL regex.
+порог inline/file, URL regex, HMAC-валидация Mini App initData, доставка транскрипции.
 
 ## Структура проекта
 
 ```
 life-transcriber/
 ├── bot/
-│   ├── main.py                  # Точка входа, инициализация Dispatcher
+│   ├── main.py                  # Точка входа; ставит menu button если WEBAPP_URL задан
 │   ├── config.py                # Pydantic Settings (читает .env)
 │   ├── handlers/
 │   │   ├── voice.py             # voice + video_note (кружочки)
 │   │   ├── video.py             # видео-файлы и document/video
 │   │   ├── links.py             # URL → yt-dlp → transcribe
-│   │   └── callbacks.py         # кнопка «Краткий конспект»
+│   │   └── callbacks.py         # кнопки «Краткий конспект» и «Скопировать»
 │   ├── services/
 │   │   ├── transcriber.py       # OpenAI Whisper + автосплит файлов > 24MB
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект
@@ -169,13 +275,25 @@ life-transcriber/
 │   └── utils/
 │       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин
 │       └── progress.py          # ProgressReporter: один статус с анимированным баром
+├── webapp/                      # Telegram Mini App (FastAPI)
+│   ├── main.py                  # FastAPI app; POST /api/upload; static mount
+│   ├── auth.py                  # validate_init_data: HMAC-SHA256 по BOT_TOKEN
+│   ├── delivery.py              # send_transcript_to_chat(bot, chat_id, text)
+│   ├── Dockerfile
+│   └── static/
+│       ├── index.html           # TWA UI с tg-theme CSS vars
+│       └── app.js               # fetch upload + Telegram.WebApp.close()
 ├── tests/                       # pytest
-├── Dockerfile
-├── docker-compose.yml
+├── Dockerfile                   # для bot-сервиса
+├── docker-compose.yml           # сервисы: bot, cobalt, webapp
 ├── requirements.txt
+├── requirements-webapp.txt      # fastapi, uvicorn, python-multipart
 ├── requirements-dev.txt
 └── .env.example
 ```
+
+**Shared Caddy** (не в репо, живёт на VPS в `/opt/caddy/`) — reverse proxy,
+роутит `transcriber.<domain>` → `webapp:8000` через docker network `caddy_net`.
 
 ## Правила разработки
 

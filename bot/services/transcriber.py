@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -11,13 +12,20 @@ CHUNK_DURATION_SECONDS = 600  # 10 minutes per chunk
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
+ProgressCallback = Callable[[int, int], Awaitable[None]]
 
-async def transcribe(audio_path: str) -> str:
+
+async def transcribe(
+    audio_path: str,
+    progress_callback: ProgressCallback | None = None,
+) -> str:
     file_size = os.path.getsize(audio_path)
     if file_size > MAX_WHISPER_BYTES:
         chunks = await _split_audio(audio_path)
         parts = []
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks, 1):
+            if progress_callback:
+                await progress_callback(i, len(chunks))
             try:
                 parts.append(await _transcribe_file(chunk))
             finally:

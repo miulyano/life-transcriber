@@ -19,20 +19,26 @@ async def handle_link(message: Message) -> None:
     urls = URL_RE.findall(message.text)
     url = urls[0]
 
-    await message.reply(f"Скачиваю аудио по ссылке...")
+    status = await message.reply("⬇️ Скачиваю аудио...")
     audio_path = None
     try:
         audio_path = await download_audio(url, settings.TEMP_DIR)
-        text = await transcribe(audio_path)
+
+        async def on_progress(current: int, total: int) -> None:
+            await status.edit_text(f"🎙 Транскрибирую часть {current} из {total}...")
+
+        await status.edit_text("🎙 Транскрибирую...")
+        text = await transcribe(audio_path, progress_callback=on_progress)
+        await status.delete()
         await reply_text_or_file(message, text)
     except RuntimeError as e:
         error_msg = str(e)
         if "yt-dlp" in error_msg:
-            await message.reply("Не удалось скачать видео с этой платформы. Попробуй другую ссылку.")
+            await status.edit_text("Не удалось скачать видео с этой платформы. Попробуй другую ссылку.")
         else:
-            await message.reply(f"Ошибка: {error_msg}")
+            await status.edit_text(f"Ошибка: {error_msg}")
     except Exception as e:
-        await message.reply(f"Ошибка: {e}")
+        await status.edit_text(f"Ошибка: {e}")
     finally:
         if audio_path and os.path.exists(audio_path):
             os.unlink(audio_path)

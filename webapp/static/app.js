@@ -29,8 +29,8 @@ btn.onclick = async () => {
   try {
     const r = await fetch('/api/upload', { method: 'POST', body: fd });
     if (r.ok) {
-      setStatus('✅ Готово — результат придёт в чат бота.', 'success');
-      setTimeout(() => tg.close(), 2500);
+      setStatus('✅ Файл принят — транскрипция идёт в фоне.\nРезультат придёт в чат бота.', 'success');
+      setTimeout(() => tg.close(), 3000);
     } else {
       const err = await r.text();
       setStatus(`❌ Ошибка ${r.status}: ${err}`, 'error');

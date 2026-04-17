@@ -15,7 +15,7 @@ function setStatus(msg, cls) {
 
 function setProgress(percent) {
   progress.style.display = 'block';
-  progressBar.style.width = `${percent}%`;
+  progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
 }
 
 function hideProgress() {
@@ -31,7 +31,8 @@ btn.onclick = () => {
   }
 
   btn.disabled = true;
-  setStatus('Загрузка 0%…');
+  const sizeMB = (f.size / 1e6).toFixed(1);
+  setStatus(`Загрузка 0% (${sizeMB} MB)…`);
   setProgress(0);
 
   const fd = new FormData();
@@ -39,32 +40,65 @@ btn.onclick = () => {
   fd.append('init_data', tg.initData);
 
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/upload');
 
-  xhr.upload.onprogress = (e) => {
-    if (!e.lengthComputable) return;
-    const percent = Math.round((e.loaded / e.total) * 100);
-    setProgress(percent);
-    setStatus(`Загрузка ${percent}%…`);
-  };
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable && e.total > 0) {
+      const percent = Math.round((e.loaded / e.total) * 100);
+      setProgress(percent);
+      setStatus(`Загрузка ${percent}% (${sizeMB} MB)…`);
+    } else {
+      setStatus(`Загрузка… (${sizeMB} MB, прогресс недоступен)`);
+    }
+  });
 
-  xhr.onload = () => {
+  xhr.upload.addEventListener('load', () => {
+    setProgress(100);
+    setStatus(`Загрузка 100% (${sizeMB} MB), жду ответ сервера…`);
+  });
+
+  xhr.upload.addEventListener('error', () => {
+    hideProgress();
+    setStatus('❌ Ошибка сети при загрузке файла.', 'error');
+    btn.disabled = false;
+  });
+
+  xhr.upload.addEventListener('abort', () => {
+    hideProgress();
+    setStatus('❌ Загрузка прервана.', 'error');
+    btn.disabled = false;
+  });
+
+  xhr.addEventListener('load', () => {
     if (xhr.status >= 200 && xhr.status < 300) {
       setProgress(100);
       setStatus('✅ Файл загружен — транскрипция идёт в чате.', 'success');
       setTimeout(() => tg.close(), 2000);
     } else {
       hideProgress();
-      setStatus(`❌ Ошибка ${xhr.status}: ${xhr.responseText}`, 'error');
+      setStatus(`❌ Ошибка ${xhr.status}: ${xhr.responseText || '(пусто)'}`, 'error');
       btn.disabled = false;
     }
-  };
+  });
 
-  xhr.onerror = () => {
+  xhr.addEventListener('error', () => {
     hideProgress();
-    setStatus('❌ Ошибка сети при загрузке.', 'error');
+    setStatus('❌ Сеть оборвалась до ответа сервера.', 'error');
     btn.disabled = false;
-  };
+  });
 
-  xhr.send(fd);
+  xhr.addEventListener('timeout', () => {
+    hideProgress();
+    setStatus('❌ Таймаут запроса.', 'error');
+    btn.disabled = false;
+  });
+
+  try {
+    xhr.open('POST', '/api/upload');
+    xhr.timeout = 0;
+    xhr.send(fd);
+  } catch (e) {
+    hideProgress();
+    setStatus(`❌ Не удалось отправить: ${e}`, 'error');
+    btn.disabled = false;
+  }
 };

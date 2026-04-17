@@ -2,12 +2,16 @@ import asyncio
 import os
 import uuid
 from pathlib import Path
+from typing import Optional
 
+from bot.config import settings
 from bot.services.facebook import download_from_facebook, is_facebook_url
 from bot.services.instagram import download_from_instagram, is_instagram_url
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.yandex_disk import download_from_yandex_disk, is_yandex_disk_url
 from bot.services.yandex_music import (
+    YandexMusicNotPodcastError,
+    download_podcast_episode_from_yandex_music,
     is_yandex_music_episode_url,
     is_yandex_music_url,
 )
@@ -46,21 +50,45 @@ async def download_audio(url: str, output_dir: str) -> str:
                 "а не на весь подкаст"
             )
         try:
-            return await _download_with_ytdlp(url, output_dir)
+            return await download_podcast_episode_from_yandex_music(url, output_dir)
+        except YandexMusicNotPodcastError:
+            pass
+        except RuntimeError:
+            pass
+
+        try:
+            return await _download_with_ytdlp(
+                url,
+                output_dir,
+                proxy=settings.YANDEX_MUSIC_PROXY or settings.YTDLP_PROXY,
+            )
         except RuntimeError as e:
+            if "HTTP Error 451" in str(e) or "Unavailable For Legal Reasons" in str(e):
+                raise RuntimeError(
+                    "yandex-music: Яндекс Музыка недоступна из региона сервера. "
+                    "Нужен прокси или сервер в регионе, где она открывается"
+                ) from e
             raise RuntimeError(
                 "yandex-music: не удалось скачать выпуск. Возможно, ссылка "
                 "недоступна или Яндекс Музыка запросила проверку"
             ) from e
 
-    return await _download_with_ytdlp(url, output_dir)
+    return await _download_with_ytdlp(
+        url,
+        output_dir,
+        proxy=settings.YTDLP_PROXY,
+    )
 
 
-async def _download_with_ytdlp(url: str, output_dir: str) -> str:
+async def _download_with_ytdlp(
+    url: str,
+    output_dir: str,
+    proxy: Optional[str] = None,
+) -> str:
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
 
-    proc = await asyncio.create_subprocess_exec(
+    cmd = [
         "yt-dlp",
         "--no-playlist",
         "--extract-audio",
@@ -69,7 +97,13 @@ async def _download_with_ytdlp(url: str, output_dir: str) -> str:
         "--output", out_path,
         "--no-progress",
         "--quiet",
-        url,
+    ]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    cmd.append(url)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

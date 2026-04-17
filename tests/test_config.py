@@ -32,3 +32,5 @@ def test_defaults():
     assert s.GPT_MODEL == "gpt-4o"
     assert s.TEMP_DIR == "/tmp/transcriber"
     assert s.COBALT_API_URL == "http://cobalt:9000"
+    assert s.YTDLP_PROXY is None
+    assert s.YANDEX_MUSIC_PROXY is None

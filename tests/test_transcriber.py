@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 import bot.services.transcriber as transcriber_module
+import bot.utils.fake_progress as fake_progress_module
 from bot.services.transcriber import MAX_WHISPER_BYTES, transcribe
 
 

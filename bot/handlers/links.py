@@ -29,6 +29,11 @@ def _friendly_error(error_msg: str) -> str:
         if not detail:
             return "Ошибка Яндекс Диска"
         return detail[:1].upper() + detail[1:]
+    if error_msg.startswith("yandex-music:"):
+        detail = error_msg.split(":", 1)[1].strip()
+        if not detail:
+            return "Ошибка Яндекс Музыки"
+        return detail[:1].upper() + detail[1:]
     if error_msg.startswith("facebook:"):
         detail = error_msg.split(":", 1)[1].strip()
         if not detail:

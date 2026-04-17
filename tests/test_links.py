@@ -44,6 +44,13 @@ def test_findall_multiple_urls():
     assert len(urls) == 2
 
 
+def test_friendly_error_yandex_music():
+    text = links._friendly_error(
+        "yandex-music: пришлите ссылку на конкретный выпуск подкаста"
+    )
+    assert text == "Пришлите ссылку на конкретный выпуск подкаста"
+
+
 async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
     events = []
     audio_path = tmp_path / "audio.mp3"

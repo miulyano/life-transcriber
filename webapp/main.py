@@ -15,6 +15,7 @@ from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
 from bot.config import settings
+from bot.services.formatter import format_transcript
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 from bot.services.transcriber import transcribe
@@ -54,7 +55,9 @@ def _file_size(path: str) -> int | None:
         return None
 
 
-async def _process_upload(dest: str, user_id: int) -> None:
+async def _process_upload(
+    dest: str, user_id: int, filename_hint: str | None = None
+) -> None:
     """Transcribe file and deliver result to chat. Runs as a background task."""
     bot = Bot(
         token=settings.BOT_TOKEN,
@@ -91,6 +94,15 @@ async def _process_upload(dest: str, user_id: int) -> None:
                 )
                 transcribe_seconds = time.monotonic() - transcribe_started_at
 
+                await reporter.set_phase("Форматирую…")
+                format_started_at = time.monotonic()
+                text = await format_transcript(
+                    text,
+                    filename_hint=filename_hint,
+                    on_progress_fraction=reporter.set_progress_fraction,
+                )
+                format_seconds = time.monotonic() - format_started_at
+
                 delivery_started_at = time.monotonic()
                 await send_transcript_to_chat(bot, user_id, text)
                 delivery_seconds = time.monotonic() - delivery_started_at
@@ -98,12 +110,13 @@ async def _process_upload(dest: str, user_id: int) -> None:
 
                 logger.info(
                     "Processed upload for user %s: source=%s bytes, audio=%s bytes, "
-                    "prepare=%.2fs, transcribe=%.2fs, delivery=%.2fs, total=%.2fs",
+                    "prepare=%.2fs, transcribe=%.2fs, format=%.2fs, delivery=%.2fs, total=%.2fs",
                     user_id,
                     source_bytes,
                     audio_bytes,
                     prepare_seconds,
                     transcribe_seconds,
+                    format_seconds,
                     delivery_seconds,
                     time.monotonic() - started_at,
                 )
@@ -155,7 +168,7 @@ async def upload(
     )
 
     # --- Respond immediately, transcribe in background ---
-    background_tasks.add_task(_process_upload, dest, user_id)
+    background_tasks.add_task(_process_upload, dest, user_id, file.filename)
     return {"ok": True}
 
 

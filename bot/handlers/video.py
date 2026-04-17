@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import uuid
 
@@ -6,6 +8,7 @@ from aiogram.types import Message
 
 from bot.config import settings
 from bot.services.downloader import extract_audio
+from bot.services.formatter import format_transcript
 from bot.services.transcriber import transcribe
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
@@ -13,7 +16,13 @@ from bot.utils.text import reply_text_or_file
 router = Router()
 
 
-async def _process(message: Message, bot: Bot, file_id: str, suffix: str) -> None:
+async def _process(
+    message: Message,
+    bot: Bot,
+    file_id: str,
+    suffix: str,
+    filename_hint: str | None = None,
+) -> None:
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
     video_path = os.path.join(settings.TEMP_DIR, f"{uuid.uuid4().hex}{suffix}")
     audio_path: str | None = None
@@ -36,6 +45,12 @@ async def _process(message: Message, bot: Bot, file_id: str, suffix: str) -> Non
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
         if text is not None:
+            await reporter.set_phase("Форматирую…")
+            text = await format_transcript(
+                text,
+                filename_hint=filename_hint,
+                on_progress_fraction=reporter.set_progress_fraction,
+            )
             await reporter.set_phase("Отправляю результат…")
             await reply_text_or_file(message, text)
         await reporter.finish()
@@ -48,5 +63,12 @@ async def handle_video(message: Message, bot: Bot) -> None:
 
 @router.message(F.document.mime_type.startswith("video/"))
 async def handle_video_document(message: Message, bot: Bot) -> None:
-    ext = os.path.splitext(message.document.file_name or "")[1] or ".mp4"
-    await _process(message, bot, message.document.file_id, ext)
+    file_name = message.document.file_name or ""
+    ext = os.path.splitext(file_name)[1] or ".mp4"
+    await _process(
+        message,
+        bot,
+        message.document.file_id,
+        ext,
+        filename_hint=file_name or None,
+    )

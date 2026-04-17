@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 
@@ -6,6 +8,7 @@ from aiogram.types import Message
 
 from bot.config import settings
 from bot.services.downloader import download_audio
+from bot.services.formatter import format_transcript
 from bot.services.transcriber import transcribe
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
@@ -60,6 +63,11 @@ async def handle_link(message: Message) -> None:
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
         if text is not None:
+            await reporter.set_phase("Форматирую…")
+            text = await format_transcript(
+                text,
+                on_progress_fraction=reporter.set_progress_fraction,
+            )
             await reporter.set_phase("Отправляю результат…")
             await reply_text_or_file(message, text)
         await reporter.finish()

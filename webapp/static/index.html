@@ -59,6 +59,21 @@
     }
     #status.success { color: #27ae60; }
     #status.error { color: #e74c3c; }
+    #progress {
+      display: none;
+      width: 100%;
+      height: 10px;
+      margin-top: 12px;
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--tg-theme-secondary-bg-color, #eee);
+    }
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--tg-theme-button-color, #2481cc);
+      transition: width 0.15s linear;
+    }
   </style>
 </head>
 <body>
@@ -66,6 +81,7 @@
   <p class="hint">Выбери файл — он уйдёт на транскрибацию. Результат придёт прямо в чат бота.</p>
   <input type="file" id="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.mp4,.mov,.mkv,.webm">
   <button id="upload">Отправить</button>
+  <div id="progress"><div id="progress-bar"></div></div>
   <div id="status"></div>
   <script src="app.js"></script>
 </body>

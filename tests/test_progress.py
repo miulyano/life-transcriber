@@ -300,6 +300,52 @@ async def test_fraction_overrides_progress_counter():
     assert fraction_edits[-1]["text"].count(FILLED) == round(0.7 * BAR_WIDTH)
 
 
+class FakeChatBot(FakeBot):
+    """FakeBot extended with send_message, for ProgressReporter.for_chat()."""
+
+    def __init__(self, chat_id: int = 42, message_id: int = 500):
+        super().__init__()
+        self.sent: list[dict] = []
+        self._next_id = message_id
+
+    async def send_message(self, chat_id: int, text: str):
+        self._next_id += 1
+        self.sent.append({"chat_id": chat_id, "text": text, "message_id": self._next_id})
+        return FakeStatusMessage(chat_id, self._next_id, text)
+
+
+@pytest.mark.asyncio
+async def test_for_chat_sends_initial_message_and_finishes():
+    bot = FakeChatBot()
+    async with ProgressReporter.for_chat(
+        bot, chat_id=42, initial_label="Готовлю аудио…",
+        tick_seconds=0, sleep=_noop_sleep,
+    ) as r:
+        await r.set_phase("Транскрибирую…")
+        await r.finish()
+    assert len(bot.sent) == 1
+    assert bot.sent[0]["chat_id"] == 42
+    assert "Готовлю аудио" in bot.sent[0]["text"]
+    texts = [e["text"] for e in bot.edits]
+    assert any("Транскрибирую" in t for t in texts)
+    assert len(bot.deleted) == 1
+    assert bot.deleted[0]["chat_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_for_chat_fail_edits_without_delete():
+    bot = FakeChatBot()
+    async with ProgressReporter.for_chat(
+        bot, chat_id=42, initial_label="Готовлю аудио…",
+        tick_seconds=0, sleep=_noop_sleep,
+    ) as r:
+        await r.fail("Не удалось обработать файл.")
+    assert bot.deleted == []
+    fail_edits = [e for e in bot.edits if "Не удалось" in e["text"]]
+    assert fail_edits
+    assert fail_edits[-1]["text"].startswith("❌ ")
+
+
 @pytest.mark.asyncio
 async def test_set_phase_resets_fraction_to_indeterminate():
     """After set_phase, bar must be indeterminate again (no counter, runner moves)."""

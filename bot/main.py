@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -10,6 +11,10 @@ from aiogram.types import MenuButtonDefault, MenuButtonWebApp, WebAppInfo
 from bot.config import settings
 from bot.handlers import callbacks, links, video, voice
 from bot.middlewares.auth import AuthMiddleware
+from bot.services.temp_cleanup import run_periodic_temp_cleanup
+
+
+logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
@@ -19,6 +24,9 @@ async def main() -> None:
     )
 
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    cleanup_task = asyncio.create_task(
+        run_periodic_temp_cleanup(settings.TEMP_DIR, logger=logger)
+    )
 
     bot = Bot(
         token=settings.BOT_TOKEN,
@@ -45,11 +53,16 @@ async def main() -> None:
         await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
 
     logging.info("Bot started. Allowed users: %s", settings.allowed_user_ids)
-    await dp.start_polling(
-        bot,
-        allowed_updates=dp.resolve_used_update_types(),
-        drop_pending_updates=True,
-    )
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+            drop_pending_updates=True,
+        )
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 if __name__ == "__main__":

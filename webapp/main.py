@@ -5,7 +5,7 @@ import logging
 import os
 import time
 import uuid
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 
 import aiofiles
 from aiogram import Bot
@@ -17,18 +17,34 @@ from fastapi.staticfiles import StaticFiles
 
 from bot.config import settings
 from bot.services.media import prepare_audio_for_transcription
+from bot.services.temp_cleanup import run_periodic_temp_cleanup
 from bot.services.transcriber import transcribe
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="life-transcriber webapp")
-
 MAX_INIT_DATA_AGE = 24 * 3600  # 24 hours
 UPLOAD_ERROR_TEXT = (
     "Не удалось обработать файл. Проверь, что это аудио или видео, и попробуй ещё раз."
 )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    cleanup_task = asyncio.create_task(
+        run_periodic_temp_cleanup(settings.TEMP_DIR, logger=logger)
+    )
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
+
+
+app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
 
 
 def _file_size(path: str) -> int | None:

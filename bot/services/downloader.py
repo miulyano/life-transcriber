@@ -7,6 +7,10 @@ from bot.services.facebook import download_from_facebook, is_facebook_url
 from bot.services.instagram import download_from_instagram, is_instagram_url
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.yandex_disk import download_from_yandex_disk, is_yandex_disk_url
+from bot.services.yandex_music import (
+    is_yandex_music_episode_url,
+    is_yandex_music_url,
+)
 
 
 async def download_audio(url: str, output_dir: str) -> str:
@@ -35,6 +39,24 @@ async def download_audio(url: str, output_dir: str) -> str:
             if os.path.exists(raw_path):
                 os.unlink(raw_path)
 
+    if is_yandex_music_url(url):
+        if not is_yandex_music_episode_url(url):
+            raise RuntimeError(
+                "yandex-music: пришлите ссылку на конкретный выпуск подкаста, "
+                "а не на весь подкаст"
+            )
+        try:
+            return await _download_with_ytdlp(url, output_dir)
+        except RuntimeError as e:
+            raise RuntimeError(
+                "yandex-music: не удалось скачать выпуск. Возможно, ссылка "
+                "недоступна или Яндекс Музыка запросила проверку"
+            ) from e
+
+    return await _download_with_ytdlp(url, output_dir)
+
+
+async def _download_with_ytdlp(url: str, output_dir: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
 

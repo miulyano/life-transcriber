@@ -62,8 +62,31 @@ class ProgressReporter:
         tick_seconds: float = TICK_SECONDS,
         sleep: SleepFn = asyncio.sleep,
     ) -> None:
+        self._init_state(initial_label, tick_seconds, sleep)
         self._message = message
         self._bot = message.bot
+        self._initial_chat_id: Optional[int] = None
+
+    @classmethod
+    def for_chat(
+        cls,
+        bot,
+        chat_id: int,
+        initial_label: str,
+        *,
+        tick_seconds: float = TICK_SECONDS,
+        sleep: SleepFn = asyncio.sleep,
+    ) -> "ProgressReporter":
+        self = cls.__new__(cls)
+        self._init_state(initial_label, tick_seconds, sleep)
+        self._message = None
+        self._bot = bot
+        self._initial_chat_id = chat_id
+        return self
+
+    def _init_state(
+        self, initial_label: str, tick_seconds: float, sleep: SleepFn
+    ) -> None:
         self._label = initial_label
         self._tick_seconds = tick_seconds
         self._sleep = sleep
@@ -77,16 +100,23 @@ class ProgressReporter:
         self._fraction: Optional[float] = None
         self._last_rendered: Optional[str] = None
         self._stopped: bool = False
-        self._resolved: bool = False  # finish() or fail() was called
+        self._resolved: bool = False
 
         self._edit_lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
 
     async def __aenter__(self) -> "ProgressReporter":
-        self._status_message = await self._message.reply(self._compose())
-        self._chat_id = self._status_message.chat.id
-        self._message_id = self._status_message.message_id
-        self._last_rendered = self._status_message.text
+        if self._message is not None:
+            self._status_message = await self._message.reply(self._compose())
+            self._chat_id = self._status_message.chat.id
+            self._message_id = self._status_message.message_id
+            self._last_rendered = self._status_message.text
+        else:
+            sent = await self._bot.send_message(self._initial_chat_id, self._compose())
+            self._status_message = sent
+            self._chat_id = self._initial_chat_id
+            self._message_id = sent.message_id
+            self._last_rendered = self._compose()
         self._task = asyncio.create_task(self._run())
         return self
 

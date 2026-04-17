@@ -11,7 +11,6 @@ import aiofiles
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Message
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
@@ -19,6 +18,7 @@ from bot.config import settings
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 from bot.services.transcriber import transcribe
+from bot.utils.progress import ProgressReporter
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
 
@@ -54,47 +54,6 @@ def _file_size(path: str) -> int | None:
         return None
 
 
-async def _send_status(bot: Bot, user_id: int, text: str) -> Message | None:
-    try:
-        return await bot.send_message(user_id, text)
-    except Exception:
-        logger.exception("Failed to send upload status to user %s", user_id)
-        return None
-
-
-async def _edit_or_send_status(
-    bot: Bot,
-    user_id: int,
-    status_message: Message | None,
-    text: str,
-) -> Message | None:
-    if status_message is not None:
-        try:
-            await bot.edit_message_text(
-                text,
-                chat_id=user_id,
-                message_id=status_message.message_id,
-            )
-            return status_message
-        except Exception:
-            logger.exception("Failed to edit upload status for user %s", user_id)
-    return await _send_status(bot, user_id, text)
-
-
-async def _delete_status(
-    bot: Bot,
-    user_id: int,
-    status_message: Message | None,
-) -> None:
-    if status_message is None:
-        return
-    with suppress(Exception):
-        await bot.delete_message(
-            chat_id=user_id,
-            message_id=status_message.message_id,
-        )
-
-
 async def _process_upload(dest: str, user_id: int) -> None:
     """Transcribe file and deliver result to chat. Runs as a background task."""
     bot = Bot(
@@ -102,59 +61,55 @@ async def _process_upload(dest: str, user_id: int) -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     audio_path: str | None = None
-    status_message: Message | None = None
     source_bytes = _file_size(dest)
     started_at = time.monotonic()
 
     try:
-        status_message = await _send_status(
-            bot,
-            user_id,
-            "Файл получен. Готовлю аудио…",
-        )
+        async with ProgressReporter.for_chat(bot, user_id, "Готовлю аудио…") as reporter:
+            try:
+                prepare_started_at = time.monotonic()
+                audio_path = await prepare_audio_for_transcription(
+                    dest, settings.TEMP_DIR
+                )
+                prepare_seconds = time.monotonic() - prepare_started_at
+                audio_bytes = _file_size(audio_path)
+                logger.info(
+                    "Prepared upload audio for user %s: source=%s bytes, audio=%s bytes, seconds=%.2f",
+                    user_id,
+                    source_bytes,
+                    audio_bytes,
+                    prepare_seconds,
+                )
 
-        prepare_started_at = time.monotonic()
-        audio_path = await prepare_audio_for_transcription(dest, settings.TEMP_DIR)
-        prepare_seconds = time.monotonic() - prepare_started_at
-        audio_bytes = _file_size(audio_path)
-        logger.info(
-            "Prepared upload audio for user %s: source=%s bytes, audio=%s bytes, seconds=%.2f",
-            user_id,
-            source_bytes,
-            audio_bytes,
-            prepare_seconds,
-        )
+                await reporter.set_phase("Транскрибирую…")
 
-        status_message = await _edit_or_send_status(
-            bot,
-            user_id,
-            status_message,
-            "Аудио готово. Транскрибирую…",
-        )
+                transcribe_started_at = time.monotonic()
+                text = await transcribe(
+                    audio_path,
+                    on_progress=reporter.set_progress,
+                    on_progress_fraction=reporter.set_progress_fraction,
+                )
+                transcribe_seconds = time.monotonic() - transcribe_started_at
 
-        transcribe_started_at = time.monotonic()
-        text = await transcribe(audio_path)
-        transcribe_seconds = time.monotonic() - transcribe_started_at
+                delivery_started_at = time.monotonic()
+                await send_transcript_to_chat(bot, user_id, text)
+                delivery_seconds = time.monotonic() - delivery_started_at
+                await reporter.finish()
 
-        delivery_started_at = time.monotonic()
-        await send_transcript_to_chat(bot, user_id, text)
-        delivery_seconds = time.monotonic() - delivery_started_at
-        await _delete_status(bot, user_id, status_message)
-
-        logger.info(
-            "Processed upload for user %s: source=%s bytes, audio=%s bytes, "
-            "prepare=%.2fs, transcribe=%.2fs, delivery=%.2fs, total=%.2fs",
-            user_id,
-            source_bytes,
-            audio_bytes,
-            prepare_seconds,
-            transcribe_seconds,
-            delivery_seconds,
-            time.monotonic() - started_at,
-        )
-    except Exception:
-        logger.exception("Transcription failed for %s (user %s)", dest, user_id)
-        await _edit_or_send_status(bot, user_id, status_message, UPLOAD_ERROR_TEXT)
+                logger.info(
+                    "Processed upload for user %s: source=%s bytes, audio=%s bytes, "
+                    "prepare=%.2fs, transcribe=%.2fs, delivery=%.2fs, total=%.2fs",
+                    user_id,
+                    source_bytes,
+                    audio_bytes,
+                    prepare_seconds,
+                    transcribe_seconds,
+                    delivery_seconds,
+                    time.monotonic() - started_at,
+                )
+            except Exception:
+                logger.exception("Transcription failed for %s (user %s)", dest, user_id)
+                await reporter.fail(UPLOAD_ERROR_TEXT)
     finally:
         for path in (audio_path, dest):
             if path and os.path.exists(path):

@@ -1,10 +1,16 @@
+import asyncio
 import os
 from urllib.parse import quote_plus
 
+import aiohttp
 import pytest
 from aioresponses import aioresponses
 
+from bot.services import yandex_disk
 from bot.services.yandex_disk import (
+    API_TIMEOUT_SECONDS,
+    DOWNLOAD_SOCK_CONNECT_SECONDS,
+    DOWNLOAD_SOCK_READ_SECONDS,
     YANDEX_DISK_URL_RE,
     download_from_yandex_disk,
     is_yandex_disk_url,
@@ -134,3 +140,99 @@ async def test_download_from_yandex_disk_missing_href(tmp_path):
         m.get(_download_url(public_key), status=200, payload={})
         with pytest.raises(RuntimeError, match=r"^yandex-disk:"):
             await download_from_yandex_disk(public_key, str(tmp_path))
+
+
+# ---------- timeout behavior ----------
+
+
+@pytest.mark.asyncio
+async def test_session_uses_download_friendly_timeout_and_api_override(
+    tmp_path, monkeypatch
+):
+    """Session-level timeout has no ``total`` cap (download-friendly), while
+    metadata/href calls override it with a strict ``total=API_TIMEOUT_SECONDS``.
+    """
+    public_key = "https://disk.yandex.ru/d/abc123"
+    href = "https://downloader.disk.yandex.ru/signed-url"
+    payload = b"x" * 1024
+
+    captured_session_timeouts: list[aiohttp.ClientTimeout] = []
+    captured_get_timeouts: list[aiohttp.ClientTimeout | object] = []
+
+    real_session_cls = aiohttp.ClientSession
+
+    class SpyingSession(real_session_cls):
+        def __init__(self, *args, **kwargs):
+            captured_session_timeouts.append(kwargs.get("timeout"))
+            super().__init__(*args, **kwargs)
+
+        def get(self, url, **kwargs):
+            captured_get_timeouts.append(kwargs.get("timeout"))
+            return super().get(url, **kwargs)
+
+    monkeypatch.setattr(yandex_disk.aiohttp, "ClientSession", SpyingSession)
+
+    with aioresponses() as m:
+        m.get(
+            _meta_url(public_key),
+            status=200,
+            payload={
+                "type": "file",
+                "name": "rec.mp3",
+                "media_type": "audio",
+                "size": len(payload),
+            },
+        )
+        m.get(_download_url(public_key), status=200, payload={"href": href})
+        m.get(href, status=200, body=payload)
+
+        await download_from_yandex_disk(public_key, str(tmp_path))
+
+    # Session timeout: no total cap, but per-socket timeouts set.
+    assert len(captured_session_timeouts) == 1
+    session_to = captured_session_timeouts[0]
+    assert isinstance(session_to, aiohttp.ClientTimeout)
+    assert session_to.total is None
+    assert session_to.sock_connect == DOWNLOAD_SOCK_CONNECT_SECONDS
+    assert session_to.sock_read == DOWNLOAD_SOCK_READ_SECONDS
+
+    # First two session.get(...) calls (meta + href) pass total=API_TIMEOUT_SECONDS.
+    meta_to = captured_get_timeouts[0]
+    href_to = captured_get_timeouts[1]
+    assert isinstance(meta_to, aiohttp.ClientTimeout)
+    assert meta_to.total == API_TIMEOUT_SECONDS
+    assert isinstance(href_to, aiohttp.ClientTimeout)
+    assert href_to.total == API_TIMEOUT_SECONDS
+
+    # Third get (the actual file download) has no per-call override — it
+    # inherits the session-wide download-friendly timeout.
+    assert captured_get_timeouts[2] is None
+
+
+@pytest.mark.asyncio
+async def test_download_timeout_raises_friendly_runtimeerror(tmp_path):
+    public_key = "https://disk.yandex.ru/d/big"
+    href = "https://downloader.disk.yandex.ru/signed-url-big"
+
+    with aioresponses() as m:
+        m.get(
+            _meta_url(public_key),
+            status=200,
+            payload={
+                "type": "file",
+                "name": "big.mp4",
+                "media_type": "video",
+                "size": 500 * 1024 * 1024,
+            },
+        )
+        m.get(_download_url(public_key), status=200, payload={"href": href})
+        # aioresponses raises the configured exception at the body-streaming
+        # step, which is exactly the real failure mode we want to cover.
+        m.get(href, exception=asyncio.TimeoutError())
+
+        with pytest.raises(RuntimeError, match=r"^yandex-disk: скачивание прервано"):
+            await download_from_yandex_disk(public_key, str(tmp_path))
+
+    # No partial file should be left behind in the output dir.
+    leftover = [p for p in os.listdir(tmp_path)]
+    assert leftover == []

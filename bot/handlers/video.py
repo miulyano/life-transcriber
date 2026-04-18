@@ -49,6 +49,7 @@ async def _process(
             text = await format_transcript(
                 text,
                 filename_hint=filename_hint,
+                on_progress=reporter.set_progress,
                 on_progress_fraction=reporter.set_progress_fraction,
             )
             await reporter.set_phase("Отправляю результат…")

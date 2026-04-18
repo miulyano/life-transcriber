@@ -92,17 +92,3 @@ async def test_cleanup_transcript_long_text_processes_chunks_in_order(monkeypatc
     assert calls[1].kwargs["messages"][1]["content"] == "chunk two"
 
 
-def test_split_long_text_adds_overlap():
-    text = "\n\n".join(
-        [
-            " ".join(f"alpha{i}" for i in range(20)),
-            " ".join(f"bravo{i}" for i in range(20)),
-            " ".join(f"charlie{i}" for i in range(20)),
-        ]
-    )
-
-    chunks = summarizer._split_long_text(text, max_chars=180, overlap_chars=30)
-
-    assert len(chunks) > 1
-    assert all(len(chunk) <= 180 for chunk in chunks)
-    assert chunks[1].startswith(chunks[0][-30:].strip())

@@ -8,6 +8,8 @@ SUMMARY_CHUNK_MAX_CHARS = 24_000
 SUMMARY_CHUNK_OVERLAP_CHARS = 1_200
 SUMMARY_CHUNK_MAX_TOKENS = 700
 FINAL_SUMMARY_MAX_TOKENS = 1_200
+CLEANUP_CHUNK_MAX_CHARS = 12_000
+CLEANUP_MAX_TOKENS = 4_096
 
 SYSTEM_PROMPT = (
     "Ты — помощник по созданию конспектов. "
@@ -37,6 +39,17 @@ FINAL_SYSTEM_PROMPT = (
     "Не используй Markdown-разметку: никаких `**жирный**`, `*курсив*`, `#заголовок`, "
     "обратных кавычек. Заголовок категории — обычным текстом с двоеточием. "
     "Если хочешь разделить категории — отдельная строка из трёх звёздочек `***`."
+)
+
+CLEANUP_SYSTEM_PROMPT = (
+    "Ты — редактор транскрибаций. "
+    "Очисти текст от слов-паразитов, повторов, пауз, мусорных вставок и грязных формулировок, "
+    "но не меняй смысл. "
+    "Сохрани исходную структуру: порядок блоков, абзацы, заголовки, списки и обозначения спикеров. "
+    "Не превращай текст в конспект, не добавляй новые разделы и не объединяй абзацы. "
+    "Если фрагмент начинается или заканчивается на полуслове, не додумывай недостающий контекст. "
+    "Отвечай на том же языке, что и исходный текст. "
+    "Не используй Markdown-разметку."
 )
 
 
@@ -113,6 +126,37 @@ def _final_user_message(notes: list[str]) -> str:
     return "\n\n".join(numbered)
 
 
+def _split_cleanup_text(text: str, max_chars: int = CLEANUP_CHUNK_MAX_CHARS) -> list[str]:
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text] if text else []
+
+    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+    chunks: list[str] = []
+    current = ""
+
+    for paragraph in paragraphs:
+        if len(paragraph) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_text(paragraph, max_chars=max_chars, overlap_chars=0))
+            continue
+
+        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+
+        chunks.append(current)
+        current = paragraph
+
+    if current:
+        chunks.append(current)
+
+    return chunks
+
+
 async def _complete(system_prompt: str, user_message: str, max_tokens: int) -> str:
     response = await client.chat.completions.create(
         model=settings.GPT_MODEL,
@@ -156,3 +200,14 @@ async def summarize(text: str) -> str:
     for index, chunk in enumerate(chunks, 1):
         notes.append(await _summarize_chunk(chunk, index, len(chunks)))
     return await _finalize_notes(notes)
+
+
+async def cleanup_transcript(text: str) -> str:
+    chunks = _split_cleanup_text(text)
+    if not chunks:
+        return ""
+
+    cleaned_chunks = []
+    for chunk in chunks:
+        cleaned_chunks.append(await _complete(CLEANUP_SYSTEM_PROMPT, chunk, CLEANUP_MAX_TOKENS))
+    return "\n\n".join(cleaned_chunks)

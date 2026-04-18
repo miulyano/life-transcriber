@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiogram.types import InaccessibleMessage, Message
 
-from bot.handlers.callbacks import _extract_text_from_message, handle_summary
+from bot.handlers.callbacks import _extract_text_from_message, handle_cleanup, handle_summary
 from bot.utils import text as text_mod
 
 
@@ -121,6 +121,50 @@ async def test_handle_summary_no_text_anywhere():
     cb.data = "summary:nonexistent_hash"
 
     await handle_summary(cb)
+
+    cb.answer.assert_awaited_once()
+    call_args = cb.answer.await_args
+    assert "Не удалось получить текст" in call_args.args[0]
+    assert call_args.kwargs.get("show_alert") is True
+
+
+async def test_handle_cleanup_from_cache():
+    source_text = "Заголовок\n\nНу это, в общем, тестовый текст."
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"cleanup:{h}"
+    cb.message.reply_document = AsyncMock()
+
+    with patch("bot.handlers.callbacks.cleanup_transcript", new_callable=AsyncMock) as mock_cleanup:
+        mock_cleanup.return_value = "Заголовок\n\nТестовый текст."
+        await handle_cleanup(cb)
+
+    mock_cleanup.assert_awaited_once_with(source_text)
+    cb.answer.assert_any_await("Очищаю текст...")
+    cb.message.reply_document.assert_awaited_once()
+
+
+async def test_handle_cleanup_fallback_document():
+    doc = MagicMock()
+    doc.file_id = "file_789"
+    cb = _make_callback(document=doc)
+    cb.data = "cleanup:nonexistent_hash"
+    cb.bot.download.return_value = BytesIO("Заголовок\n\nНу это текст.".encode("utf-8"))
+    cb.message.reply_document = AsyncMock()
+
+    with patch("bot.handlers.callbacks.cleanup_transcript", new_callable=AsyncMock) as mock_cleanup:
+        mock_cleanup.return_value = "Заголовок\n\nТекст."
+        await handle_cleanup(cb)
+
+    mock_cleanup.assert_awaited_once_with("Заголовок\n\nНу это текст.")
+    cb.message.reply_document.assert_awaited_once()
+
+
+async def test_handle_cleanup_no_text_anywhere():
+    cb = _make_callback(is_inaccessible=True)
+    cb.data = "cleanup:nonexistent_hash"
+
+    await handle_cleanup(cb)
 
     cb.answer.assert_awaited_once()
     call_args = cb.answer.await_args

@@ -80,6 +80,16 @@ def test_build_keyboard_summary_button():
     assert "конспект" in summary_btn.text.lower()
 
 
+def test_build_keyboard_cleanup_button_on_file():
+    text = "x" * 2500
+    h = _store_text(text)
+    kb = build_keyboard(text, h, send_as_file=True)
+
+    cleanup_btn = kb.inline_keyboard[1][0]
+    assert cleanup_btn.callback_data == f"cleanup:{h}"
+    assert "очист" in cleanup_btn.text.lower()
+
+
 def test_build_keyboard_no_summary_on_short_text():
     # Short text should not have a summary button
     text = "x" * 100
@@ -97,6 +107,7 @@ def test_build_keyboard_no_copy_on_file():
     all_callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row if btn.callback_data]
     assert not any(cb.startswith("copy:") for cb in all_callbacks)
     assert any(cb.startswith("summary:") for cb in all_callbacks)
+    assert any(cb.startswith("cleanup:") for cb in all_callbacks)
 
 
 async def test_short_text_sent_inline():

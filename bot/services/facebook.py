@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+from typing import Optional
 
 import aiohttp
 
@@ -46,6 +47,9 @@ async def _request_cobalt(session: aiohttp.ClientSession, url: str) -> dict:
     try:
         async with session.post(cobalt_url, json=body, headers=headers) as resp:
             if resp.status != 200:
+                error_data = await _read_cobalt_error(resp)
+                if error_data:
+                    return error_data
                 raise RuntimeError(
                     f"facebook: Cobalt вернул HTTP {resp.status}"
                 )
@@ -54,6 +58,16 @@ async def _request_cobalt(session: aiohttp.ClientSession, url: str) -> dict:
         raise RuntimeError(
             "facebook: Cobalt недоступен, попробуйте позже"
         )
+
+
+async def _read_cobalt_error(resp: aiohttp.ClientResponse) -> Optional[dict]:
+    try:
+        data = await resp.json()
+    except (aiohttp.ContentTypeError, ValueError):
+        return None
+    if isinstance(data, dict) and data.get("status") == "error":
+        return data
+    return None
 
 
 def _extract_video_url(data: dict) -> str:

@@ -131,6 +131,29 @@ async def test_cobalt_error_response(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cobalt_http_400_error_payload(tmp_path):
+    with aioresponses() as m:
+        m.post(
+            COBALT_URL,
+            status=400,
+            payload={
+                "status": "error",
+                "error": {"code": "error.api.fetch.fail"},
+            },
+        )
+        with pytest.raises(RuntimeError) as exc:
+            await download_from_instagram(
+                "https://www.instagram.com/reel/FAIL/", str(tmp_path)
+            )
+
+    message = str(exc.value)
+    assert message == (
+        "instagram: Cobalt не смог обработать ссылку (error.api.fetch.fail)"
+    )
+    assert "HTTP 400" not in message
+
+
+@pytest.mark.asyncio
 async def test_cobalt_http_500(tmp_path):
     with aioresponses() as m:
         m.post(COBALT_URL, status=500)

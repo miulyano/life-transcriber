@@ -63,6 +63,10 @@ def build_keyboard(text: str, text_hash: str, send_as_file: bool) -> Optional[In
         rows.append(
             [InlineKeyboardButton(text="📝 Краткий конспект", callback_data=f"summary:{text_hash}")]
         )
+        if send_as_file:
+            rows.append(
+                [InlineKeyboardButton(text="🧹 Очистить текст", callback_data=f"cleanup:{text_hash}")]
+            )
 
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 

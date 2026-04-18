@@ -17,6 +17,10 @@ services:
     restart: unless-stopped
     environment:
       API_URL: "http://cobalt:9000"
+      # For Instagram outages caused by anonymous access being blocked:
+      # COOKIE_PATH: "/cookies.json"
+    # volumes:
+    #   - ./cookies.json:/cookies.json:ro
     deploy:
       resources:
         limits:

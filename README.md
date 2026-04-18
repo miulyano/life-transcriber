@@ -9,8 +9,8 @@
 - 🎥 **Видео-кружочки** (video notes) — транскрибация аудиодорожки
 - 📼 **Видео-файлы** (`.mp4`, `.mov` и т.п., в том числе пересланные) — извлечение аудио + транскрибация
 - 🔗 **Ссылки на видео** — YouTube, RuTube, VK Video, Vimeo и [многие другие платформы](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (всё, что поддерживает `yt-dlp`)
-- 📸 **Instagram Reels/видео** — публичные ссылки вида `https://www.instagram.com/reel/...` и `/p/...` скачиваются через встроенный [Cobalt](https://github.com/imputnet/cobalt) (авторизация в Instagram не требуется)
-- 📘 **Публичные видео и Reels Facebook** — ссылки `facebook.com/reel/…`, `facebook.com/watch?v=…`, `fb.watch/…` скачиваются через тот же встроенный Cobalt (авторизация не требуется)
+- 📸 **Instagram Reels/видео** — публичные ссылки вида `https://www.instagram.com/reel/...` и `/p/...` скачиваются через встроенный [Cobalt](https://github.com/imputnet/cobalt); если Instagram блокирует анонимный доступ с VPS, Cobalt можно запустить с `cookies.json`
+- 📘 **Публичные видео и Reels Facebook** — ссылки `facebook.com/reel/…`, `facebook.com/watch?v=…`, `fb.watch/…` скачиваются через тот же встроенный Cobalt
 - ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
 - 🎧 **Выпуски подкастов Яндекс Музыки** — ссылки на конкретный выпуск вида `https://music.yandex.ru/album/.../track/...` сначала скачиваются через открытый RSS подкаста, затем через `yt-dlp`; ссылка на весь подкаст не запускает массовую скачку
 - 📤 **Mini App для больших файлов** — кнопка «Загрузить файл» в меню бота открывает Telegram WebView, куда можно загрузить аудио или видео любого размера (нет ограничения 20 MB от Bot API). Backend готовит компактное audio-only MP3 перед транскрибацией. Требует HTTPS-домена и настройки shared Caddy на VPS (см. ниже)
@@ -82,7 +82,8 @@ ALLOWED_USER_IDS=123456789,987654321
 - `WHISPER_MODEL=whisper-1` — модель транскрибации
 - `GPT_MODEL=gpt-4o` — модель для конспекта
 - `TEMP_DIR=/tmp/transcriber` — где хранить временные файлы
-- `COBALT_API_URL=http://cobalt:9000` — адрес Cobalt API для Instagram (по умолчанию Docker-DNS)
+- `COBALT_API_URL=http://cobalt:9000` — адрес Cobalt API для Instagram/Facebook (по умолчанию Docker-DNS)
+- `INSTAGRAM_COOKIES_PATH=` — опциональный путь к Cobalt-style `cookies.json` внутри bot-контейнера; используется как fallback, если Cobalt возвращает `error.api.fetch.empty`
 - `YTDLP_PROXY=` — опциональный proxy для всех скачиваний через `yt-dlp`
 - `YANDEX_MUSIC_PROXY=` — proxy только для Яндекс Музыки; нужен, если VPS получает HTTP 451 из-за региона
 - `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «📤 Загрузить файл» (требует shared Caddy на VPS, см. ниже)
@@ -104,6 +105,40 @@ Bot started. Allowed users: [...]
 Start polling
 Run polling for bot @YourBotName
 ```
+
+Если все ссылки Instagram внезапно падают на стороне Cobalt:
+
+1. Сначала обнови sidecar-образ и перезапусти Cobalt:
+
+```bash
+docker compose pull cobalt
+docker compose up -d cobalt
+```
+
+2. Если Cobalt всё ещё возвращает ошибку вида `error.api.fetch.fail`, Instagram,
+   скорее всего, блокирует анонимное скачивание с VPS. Создай `cookies.json` рядом
+   с `docker-compose.yml` в формате Cobalt и не коммить этот файл. Затем раскомментируй
+   в `docker-compose.yml`:
+
+```yaml
+environment:
+  API_URL: "http://cobalt:9000"
+  COOKIE_PATH: "/cookies.json"
+volumes:
+  - ./cookies.json:/cookies.json:ro
+```
+
+После этого перезапусти Cobalt:
+
+```bash
+docker compose up -d cobalt
+```
+
+Формат cookie-файла описан в документации Cobalt: `docs/examples/cookies.example.json`.
+Если Cobalt загрузил cookies, но всё равно возвращает `error.api.fetch.empty`,
+можно подключить тот же файл к bot-контейнеру и выставить
+`INSTAGRAM_COOKIES_PATH=/cookies.json`: бот попробует получить `video_versions`
+напрямую через Instagram API.
 
 ### 5. Используй
 

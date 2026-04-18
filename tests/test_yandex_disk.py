@@ -73,11 +73,12 @@ async def test_download_from_yandex_disk_happy_path(tmp_path):
         m.get(_download_url(public_key), status=200, payload={"href": href})
         m.get(href, status=200, body=payload)
 
-        path = await download_from_yandex_disk(public_key, str(tmp_path))
+        path, name = await download_from_yandex_disk(public_key, str(tmp_path))
 
     assert os.path.exists(path)
     assert path.endswith(".mp3")
     assert os.path.dirname(path) == str(tmp_path)
+    assert name == "record.mp3"
     with open(path, "rb") as f:
         assert f.read() == payload
 

@@ -11,6 +11,7 @@ from aiogram.types import (
 )
 
 from bot.config import settings
+from bot.utils.filename import build_filename, extract_title
 
 # In-memory store: {hash: (text, timestamp)}
 _text_cache: dict[str, tuple[str, float]] = {}
@@ -75,8 +76,9 @@ async def reply_text_or_file(message: Message, text: str) -> None:
     else:
         keyboard = build_keyboard(text, text_hash, send_as_file=True)
         file_bytes = text.encode("utf-8")
+        title = extract_title(text)
         await message.reply_document(
-            BufferedInputFile(file_bytes, filename="transcript.txt"),
-            caption="Транскрипция готова.",
+            BufferedInputFile(file_bytes, filename=build_filename(title)),
+            caption=title or "Транскрибация готова.",
             reply_markup=keyboard,
         )

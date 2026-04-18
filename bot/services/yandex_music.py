@@ -40,7 +40,7 @@ def is_yandex_music_episode_url(url: str) -> bool:
 async def download_podcast_episode_from_yandex_music(
     url: str,
     output_dir: str,
-) -> str:
+) -> tuple[str, str | None]:
     match = YANDEX_MUSIC_EPISODE_URL_RE.match(url)
     if not match:
         raise RuntimeError("yandex-music: некорректная ссылка на выпуск")
@@ -64,13 +64,27 @@ async def download_podcast_episode_from_yandex_music(
                 "yandex-music: ссылка ведёт не на выпуск подкаста"
             )
 
-        feed_url = await _find_podcast_feed(session, album.get("title"))
+        podcast_title = album.get("title")
+        episode_title = track.get("title")
+        feed_url = await _find_podcast_feed(session, podcast_title)
         enclosure_url = await _find_episode_enclosure(
             session,
             feed_url,
-            track.get("title"),
+            episode_title,
         )
-        return await _download_to_file(session, enclosure_url, output_dir)
+        path = await _download_to_file(session, enclosure_url, output_dir)
+        source_title = _compose_source_title(podcast_title, episode_title)
+        return path, source_title
+
+
+def _compose_source_title(
+    podcast_title: str | None, episode_title: str | None
+) -> str | None:
+    parts = [p for p in (podcast_title, episode_title) if p]
+    if not parts:
+        return None
+    base = " — ".join(parts)
+    return f"подкаст «{base}»"
 
 
 async def _fetch_album(

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import uuid
@@ -17,12 +19,18 @@ from bot.services.yandex_music import (
 )
 
 
-async def download_audio(url: str, output_dir: str) -> str:
-    """Download audio from a URL (YouTube, RuTube, VK, Yandex Disk, etc.)."""
+async def download_audio(url: str, output_dir: str) -> tuple[str, Optional[str]]:
+    """Download audio from a URL and return (local_path, source_title).
+
+    source_title is a human-readable hint about the source (video/podcast title,
+    filename) or None if the downloader can't provide one. It's passed to the
+    formatter as a hint for title generation and, for podcasts, as a cue to
+    look for multiple speakers.
+    """
     if is_yandex_disk_url(url):
-        raw_path = await download_from_yandex_disk(url, output_dir)
+        raw_path, title = await download_from_yandex_disk(url, output_dir)
         try:
-            return await extract_audio(raw_path, output_dir)
+            return await extract_audio(raw_path, output_dir), title
         finally:
             if os.path.exists(raw_path):
                 os.unlink(raw_path)
@@ -30,7 +38,7 @@ async def download_audio(url: str, output_dir: str) -> str:
     if is_instagram_url(url):
         raw_path = await download_from_instagram(url, output_dir)
         try:
-            return await extract_audio(raw_path, output_dir)
+            return await extract_audio(raw_path, output_dir), None
         finally:
             if os.path.exists(raw_path):
                 os.unlink(raw_path)
@@ -38,7 +46,7 @@ async def download_audio(url: str, output_dir: str) -> str:
     if is_facebook_url(url):
         raw_path = await download_from_facebook(url, output_dir)
         try:
-            return await extract_audio(raw_path, output_dir)
+            return await extract_audio(raw_path, output_dir), None
         finally:
             if os.path.exists(raw_path):
                 os.unlink(raw_path)
@@ -84,7 +92,7 @@ async def _download_with_ytdlp(
     url: str,
     output_dir: str,
     proxy: Optional[str] = None,
-) -> str:
+) -> tuple[str, Optional[str]]:
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
 
@@ -95,6 +103,7 @@ async def _download_with_ytdlp(
         "--audio-format", "mp3",
         "--audio-quality", "0",
         "--output", out_path,
+        "--print", "after_move:%(title)s",
         "--no-progress",
         "--quiet",
     ]
@@ -107,12 +116,14 @@ async def _download_with_ytdlp(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    stdout, stderr = await proc.communicate()
 
     if proc.returncode != 0:
         raise RuntimeError(
             f"yt-dlp failed (code {proc.returncode}): {stderr.decode().strip()}"
         )
+
+    title = stdout.decode().strip() or None
 
     # yt-dlp replaces %(ext)s — find the resulting file
     base = Path(out_path).with_suffix("")
@@ -120,7 +131,7 @@ async def _download_with_ytdlp(
     candidates = list(parent.glob(f"{base.name}.*"))
     if not candidates:
         raise RuntimeError("yt-dlp did not produce an output file")
-    return str(candidates[0])
+    return str(candidates[0]), title
 
 
 async def extract_audio(video_path: str, output_dir: str) -> str:

@@ -71,7 +71,7 @@ btn.onclick = () => {
   xhr.addEventListener('load', () => {
     if (xhr.status >= 200 && xhr.status < 300) {
       setProgress(100);
-      setStatus('✅ Файл загружен — транскрипция идёт в чате.', 'success');
+      setStatus('✅ Файл загружен — транскрибация идёт в чате.', 'success');
       setTimeout(() => tg.close(), 2000);
     } else {
       hideProgress();

@@ -2,6 +2,7 @@ from aiogram import Bot
 from aiogram.types import BufferedInputFile
 
 from bot.config import settings
+from bot.utils.filename import build_filename, extract_title
 from bot.utils.text import _store_text, build_keyboard
 
 
@@ -18,9 +19,10 @@ async def send_transcript_to_chat(bot: Bot, chat_id: int, text: str) -> None:
         await bot.send_message(chat_id, text, reply_markup=kb)
     else:
         kb = build_keyboard(text, h, send_as_file=True)
+        title = extract_title(text)
         await bot.send_document(
             chat_id,
-            BufferedInputFile(text.encode("utf-8"), filename="transcript.txt"),
-            caption="Транскрипция готова.",
+            BufferedInputFile(text.encode("utf-8"), filename=build_filename(title)),
+            caption=title or "Транскрибация готова.",
             reply_markup=kb,
         )

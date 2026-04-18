@@ -39,6 +39,7 @@ async def _handle(message: Message, bot: Bot, file_id: str, suffix: str, label: 
             await reporter.set_phase("Форматирую…")
             text = await format_transcript(
                 text,
+                on_progress=reporter.set_progress,
                 on_progress_fraction=reporter.set_progress_fraction,
             )
             await reporter.set_phase("Отправляю результат…")

@@ -21,6 +21,7 @@
 **Формат ответа:**
 - Короткий текст (≤ 2000 символов) — приходит прямо в чате
 - Длинный текст — приходит файлом `.txt` (имя файла строится из заголовка материала) с форматированием от GPT: первая строка — заголовок материала, дальше — абзацы; для подкастов/интервью реплики размечаются префиксом с именем или «Спикер 1», «Спикер 2»
+- **Длинные подкасты (1h+)** форматируются по фрагментам: отдельный вызов генерирует заголовок по сэмплу всей транскрипции, затем тело режется на куски по границам предложений и каждый кусок форматируется отдельно — метки спикеров из первого фрагмента явно передаются в следующие, чтобы именование было консистентным. Это снимает молчаливое обрезание по лимиту токенов модели.
 
 **Доступ:** по whitelist Telegram user ID. Случайные пользователи не получают ответа.
 
@@ -311,10 +312,11 @@ life-transcriber/
 │   │   └── callbacks.py         # кнопки «Краткий конспект» и «Скопировать»
 │   ├── services/
 │   │   ├── transcriber.py       # OpenAI Whisper + автосплит файлов > 24MB
+│   │   ├── formatter.py         # OpenAI GPT-4o → заголовок + абзацы + спикеры; chunking длинных транскриптов, finish_reason-guard
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект, chunking длинных текстов
 │   │   ├── instagram.py         # Instagram Reels через Cobalt API
 │   │   ├── facebook.py          # Facebook Videos/Reels через Cobalt API
-│   │   ├── yandex_disk.py       # Публичное API Яндекс Диска
+│   │   ├── yandex_disk.py       # Публичное API Яндекс Диска; раздельные таймауты API/скачивания
 │   │   ├── yandex_music.py      # URL выпусков подкастов Яндекс Музыки
 │   │   ├── media.py             # Подготовка audio-only MP3 через FFmpeg
 │   │   ├── temp_cleanup.py      # Периодическая очистка старых файлов из TEMP_DIR
@@ -322,6 +324,8 @@ life-transcriber/
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
 │   └── utils/
 │       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин
+│       ├── text_chunking.py     # split_long_text: общий чанкер для summarizer/formatter
+│       ├── fake_progress.py     # ровный прогресс-бар для операций без реального сигнала
 │       └── progress.py          # ProgressReporter: один статус с анимированным баром
 ├── webapp/                      # Telegram Mini App (FastAPI)
 │   ├── main.py                  # FastAPI app; POST /api/upload; static mount

@@ -99,6 +99,7 @@ async def _process_upload(
                 text = await format_transcript(
                     text,
                     filename_hint=filename_hint,
+                    on_progress=reporter.set_progress,
                     on_progress_fraction=reporter.set_progress_fraction,
                 )
                 format_seconds = time.monotonic() - format_started_at

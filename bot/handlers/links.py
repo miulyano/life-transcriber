@@ -73,6 +73,7 @@ async def handle_link(message: Message) -> None:
             text = await format_transcript(
                 text,
                 filename_hint=source_title,
+                on_progress=reporter.set_progress,
                 on_progress_fraction=reporter.set_progress_fraction,
             )
             await reporter.set_phase("Отправляю результат…")

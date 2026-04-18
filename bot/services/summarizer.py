@@ -1,6 +1,7 @@
 from openai import AsyncOpenAI
 
 from bot.config import settings
+from bot.utils.text_chunking import split_long_text
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
@@ -53,68 +54,16 @@ CLEANUP_SYSTEM_PROMPT = (
 )
 
 
-def _split_long_text(
-    text: str,
-    max_chars: int = SUMMARY_CHUNK_MAX_CHARS,
-    overlap_chars: int = SUMMARY_CHUNK_OVERLAP_CHARS,
-) -> list[str]:
-    text = text.strip()
-    if len(text) <= max_chars:
-        return [text] if text else []
+def _split_long_text(text: str) -> list[str]:
+    """Thin wrapper around :func:`split_long_text` with summarizer defaults.
 
-    content_limit = max(1, max_chars - overlap_chars - 2)
-    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
-    chunks: list[str] = []
-    current = ""
-
-    def append_piece(piece: str) -> None:
-        nonlocal current
-        if not current:
-            current = piece
-            return
-        candidate = f"{current}\n\n{piece}"
-        if len(candidate) <= content_limit:
-            current = candidate
-            return
-        chunks.append(current)
-        current = piece
-
-    for paragraph in paragraphs:
-        if len(paragraph) <= content_limit:
-            append_piece(paragraph)
-            continue
-
-        words = paragraph.split()
-        piece = ""
-        for word in words:
-            if len(word) > content_limit:
-                if piece:
-                    append_piece(piece)
-                    piece = ""
-                for start in range(0, len(word), content_limit):
-                    append_piece(word[start : start + content_limit])
-                continue
-            candidate = f"{piece} {word}".strip()
-            if len(candidate) <= content_limit:
-                piece = candidate
-                continue
-            if piece:
-                append_piece(piece)
-            piece = word
-        if piece:
-            append_piece(piece)
-
-    if current:
-        chunks.append(current)
-
-    chunks_with_overlap = [chunks[0]]
-    for previous, chunk in zip(chunks, chunks[1:]):
-        overlap = previous[-overlap_chars:].strip()
-        if overlap:
-            chunks_with_overlap.append(f"{overlap}\n\n{chunk}")
-        else:
-            chunks_with_overlap.append(chunk)
-    return chunks_with_overlap
+    Kept as a named module-level function so tests can monkeypatch it.
+    """
+    return split_long_text(
+        text,
+        max_chars=SUMMARY_CHUNK_MAX_CHARS,
+        overlap_chars=SUMMARY_CHUNK_OVERLAP_CHARS,
+    )
 
 
 def _chunk_user_message(chunk: str, index: int, total: int) -> str:
@@ -140,7 +89,9 @@ def _split_cleanup_text(text: str, max_chars: int = CLEANUP_CHUNK_MAX_CHARS) -> 
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(_split_long_text(paragraph, max_chars=max_chars, overlap_chars=0))
+            chunks.extend(
+                split_long_text(paragraph, max_chars=max_chars, overlap_chars=0)
+            )
             continue
 
         candidate = paragraph if not current else f"{current}\n\n{paragraph}"

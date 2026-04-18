@@ -5,6 +5,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
 from bot.services.summarizer import summarize
+from bot.utils.markdown import markdown_to_telegram_html
 from bot.utils.text import _store_text, get_cached_text
 
 router = Router()
@@ -42,7 +43,11 @@ async def handle_summary(callback: CallbackQuery) -> None:
     await callback.answer("Генерирую конспект...")
     try:
         summary = await summarize(text)
-        await callback.message.reply(f"📝 Краткий конспект:\n\n{summary}")
+        body = markdown_to_telegram_html(summary)
+        await callback.message.reply(
+            f"📝 Краткий конспект:\n\n{body}",
+            parse_mode="HTML",
+        )
     except Exception as e:
         await callback.message.reply(f"Ошибка при генерации конспекта: {e}")
 

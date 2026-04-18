@@ -109,7 +109,7 @@ async def test_download_podcast_episode_from_yandex_music_uses_rss(tmp_path):
         )
         m.get(enclosure_url, body=b"audio")
 
-        path = await download_podcast_episode_from_yandex_music(
+        path, source_title = await download_podcast_episode_from_yandex_music(
             public_key,
             str(tmp_path),
         )
@@ -117,6 +117,9 @@ async def test_download_podcast_episode_from_yandex_music_uses_rss(tmp_path):
     assert Path(path).exists()
     assert Path(path).suffix == ".mp3"
     assert Path(path).read_bytes() == b"audio"
+    assert source_title is not None
+    assert "Куда расти?" in source_title
+    assert "Артём Арюткин" in source_title
 
 
 @pytest.mark.asyncio
@@ -149,7 +152,7 @@ async def test_download_audio_uses_ytdlp_for_yandex_music_episode(
     )
 
     url = "https://music.yandex.ru/album/9091882/track/60513409"
-    path = await downloader_module.download_audio(url, str(tmp_path))
+    path, _title = await downloader_module.download_audio(url, str(tmp_path))
 
     assert Path(path).exists()
     assert Path(path).suffix == ".mp3"
@@ -169,7 +172,7 @@ async def test_download_audio_uses_rss_for_yandex_music_podcast(tmp_path, monkey
         audio_path.write_bytes(b"audio")
         assert url == "https://music.yandex.ru/album/9091882/track/60513409"
         assert output_dir == str(tmp_path)
-        return str(audio_path)
+        return str(audio_path), "подкаст «Test — Episode»"
 
     async def fake_exec(*_args, **_kwargs):
         raise AssertionError("yt-dlp should not be called")
@@ -185,12 +188,13 @@ async def test_download_audio_uses_rss_for_yandex_music_podcast(tmp_path, monkey
         fake_exec,
     )
 
-    result = await downloader_module.download_audio(
+    result_path, result_title = await downloader_module.download_audio(
         "https://music.yandex.ru/album/9091882/track/60513409",
         str(tmp_path),
     )
 
-    assert result == str(audio_path)
+    assert result_path == str(audio_path)
+    assert result_title == "подкаст «Test — Episode»"
 
 
 @pytest.mark.asyncio

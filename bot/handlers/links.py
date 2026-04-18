@@ -50,11 +50,12 @@ async def handle_link(message: Message) -> None:
     url = urls[0]
 
     audio_path: str | None = None
+    source_title: str | None = None
     text: str | None = None
     async with ProgressReporter(message, "Скачиваю аудио по ссылке…") as reporter:
         try:
             try:
-                audio_path = await download_audio(url, settings.TEMP_DIR)
+                audio_path, source_title = await download_audio(url, settings.TEMP_DIR)
             except RuntimeError as e:
                 await reporter.fail(_friendly_error(str(e)))
                 return
@@ -71,6 +72,7 @@ async def handle_link(message: Message) -> None:
             await reporter.set_phase("Форматирую…")
             text = await format_transcript(
                 text,
+                filename_hint=source_title,
                 on_progress_fraction=reporter.set_progress_fraction,
             )
             await reporter.set_phase("Отправляю результат…")

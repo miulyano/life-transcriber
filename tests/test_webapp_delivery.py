@@ -16,7 +16,7 @@ def mock_bot():
 
 @pytest.mark.asyncio
 async def test_short_text_sends_message(mock_bot):
-    text = "короткая транскрипция"
+    text = "короткая транскрибация"
     await send_transcript_to_chat(mock_bot, chat_id=111, text=text)
 
     mock_bot.send_message.assert_called_once()

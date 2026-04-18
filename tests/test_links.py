@@ -84,7 +84,7 @@ async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeyp
     async def fake_download_audio(url, _output_dir):
         events.append(("download", url))
         audio_path.write_bytes(b"audio")
-        return str(audio_path)
+        return str(audio_path), None
 
     async def fake_transcribe(path, **_kwargs):
         events.append(("transcribe", path))

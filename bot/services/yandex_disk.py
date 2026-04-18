@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import uuid
@@ -20,8 +22,10 @@ def is_yandex_disk_url(url: str) -> bool:
     return bool(YANDEX_DISK_URL_RE.match(url))
 
 
-async def download_from_yandex_disk(url: str, output_dir: str) -> str:
-    """Download a public Yandex Disk file to output_dir and return its path.
+async def download_from_yandex_disk(
+    url: str, output_dir: str
+) -> tuple[str, str | None]:
+    """Download a public Yandex Disk file and return (path, original_name).
 
     Uses the public Cloud API — no auth token required. Rejects folders and
     non-audio/video resources. Raises RuntimeError with a `yandex-disk:` prefix
@@ -34,11 +38,12 @@ async def download_from_yandex_disk(url: str, output_dir: str) -> str:
         meta = await _fetch_meta(session, url)
         _validate_meta(meta)
         href = await _fetch_download_href(session, url)
-        ext = _pick_extension(meta.get("name"))
+        name = meta.get("name")
+        ext = _pick_extension(name)
         out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}{ext}")
         await _download_to_file(session, href, out_path)
 
-    return out_path
+    return out_path, name
 
 
 async def _fetch_meta(session: aiohttp.ClientSession, public_key: str) -> dict:

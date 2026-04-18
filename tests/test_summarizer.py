@@ -46,9 +46,9 @@ async def test_summarize_long_text_uses_chunk_notes_and_final_summary(monkeypatc
     assert create.await_count == 3
     calls = create.await_args_list
     assert calls[0].kwargs["messages"][0]["content"] == summarizer.CHUNK_SYSTEM_PROMPT
-    assert "Фрагмент 1/2" in calls[0].kwargs["messages"][1]["content"]
+    assert "Фрагмент транскрибации 1/2" in calls[0].kwargs["messages"][1]["content"]
     assert calls[1].kwargs["messages"][0]["content"] == summarizer.CHUNK_SYSTEM_PROMPT
-    assert "Фрагмент 2/2" in calls[1].kwargs["messages"][1]["content"]
+    assert "Фрагмент транскрибации 2/2" in calls[1].kwargs["messages"][1]["content"]
     assert calls[2].kwargs["messages"][0]["content"] == summarizer.FINAL_SYSTEM_PROMPT
     assert "notes one" in calls[2].kwargs["messages"][1]["content"]
     assert "notes two" in calls[2].kwargs["messages"][1]["content"]

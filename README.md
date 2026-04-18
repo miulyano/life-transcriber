@@ -83,6 +83,7 @@ ALLOWED_USER_IDS=123456789,987654321
 - `GPT_MODEL=gpt-4o` — модель для конспекта
 - `TEMP_DIR=/tmp/transcriber` — где хранить временные файлы
 - `COBALT_API_URL=http://cobalt:9000` — адрес Cobalt API для Instagram/Facebook (по умолчанию Docker-DNS)
+- `INSTAGRAM_COOKIES_PATH=` — опциональный путь к Cobalt-style `cookies.json` внутри bot-контейнера; используется как fallback, если Cobalt возвращает `error.api.fetch.empty`
 - `YTDLP_PROXY=` — опциональный proxy для всех скачиваний через `yt-dlp`
 - `YANDEX_MUSIC_PROXY=` — proxy только для Яндекс Музыки; нужен, если VPS получает HTTP 451 из-за региона
 - `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «📤 Загрузить файл» (требует shared Caddy на VPS, см. ниже)
@@ -134,6 +135,10 @@ docker compose up -d cobalt
 ```
 
 Формат cookie-файла описан в документации Cobalt: `docs/examples/cookies.example.json`.
+Если Cobalt загрузил cookies, но всё равно возвращает `error.api.fetch.empty`,
+можно подключить тот же файл к bot-контейнеру и выставить
+`INSTAGRAM_COOKIES_PATH=/cookies.json`: бот попробует получить `video_versions`
+напрямую через Instagram API.
 
 ### 5. Используй
 

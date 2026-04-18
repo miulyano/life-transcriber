@@ -1,10 +1,14 @@
+import json
 import os
 
 import pytest
 from aioresponses import aioresponses
 
+from bot.config import settings
 from bot.services.instagram import (
+    INSTAGRAM_API_URL,
     INSTAGRAM_URL_RE,
+    _decode_shortcode,
     download_from_instagram,
     is_instagram_url,
 )
@@ -151,6 +155,54 @@ async def test_cobalt_http_400_error_payload(tmp_path):
         "instagram: Cobalt не смог обработать ссылку (error.api.fetch.fail)"
     )
     assert "HTTP 400" not in message
+
+
+@pytest.mark.asyncio
+async def test_cobalt_fetch_empty_falls_back_to_instagram_api(
+    tmp_path, monkeypatch
+):
+    shortcode = "DXOUg2vjEDo"
+    video_bytes = b"instagram api video"
+    cookie_path = tmp_path / "cookies.json"
+    cookie_path.write_text(
+        json.dumps({"instagram": ["sessionid=s; csrftoken=c"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "INSTAGRAM_COOKIES_PATH", str(cookie_path))
+
+    api_url = INSTAGRAM_API_URL.format(media_id=_decode_shortcode(shortcode))
+
+    with aioresponses() as m:
+        m.post(
+            COBALT_URL,
+            status=400,
+            payload={
+                "status": "error",
+                "error": {"code": "error.api.fetch.empty"},
+            },
+        )
+        m.get(
+            api_url,
+            payload={
+                "items": [
+                    {
+                        "media_type": 2,
+                        "video_versions": [
+                            {"url": "https://cdn.example.com/api.mp4"},
+                        ],
+                    },
+                ],
+            },
+        )
+        m.get("https://cdn.example.com/api.mp4", body=video_bytes)
+
+        path = await download_from_instagram(
+            f"https://www.instagram.com/reel/{shortcode}/", str(tmp_path)
+        )
+
+    assert os.path.exists(path)
+    with open(path, "rb") as f:
+        assert f.read() == video_bytes
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,14 @@ import re
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 BULLET_LINE_RE = re.compile(r"^\s*[\*\-]\s+")
 DIVIDER_RE = re.compile(r"^\s*\*{3,}\s*$")
+# Short line ending with ``:`` directly followed by a non-empty line — looks
+# like a category header glued to its content. We insert a blank line between
+# them so the rendered summary visually separates header from items.
+HEADER_GLUED_RE = re.compile(r"(?m)^([^\n]{1,80}:)\n(?=[^\n])")
+
+
+def _ensure_blank_line_after_headers(text: str) -> str:
+    return HEADER_GLUED_RE.sub(r"\1\n\n", text)
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -24,7 +32,10 @@ def markdown_to_telegram_html(text: str) -> str:
     - `**bold**` → `<b>bold</b>` (non-greedy, single level).
     - Leading `* ` or `- ` on a line becomes `• `.
     - Lines of three or more `*` become a `———` divider between categories.
+    - A short ``Category:`` header glued to its content gets a blank line
+      inserted between them.
     """
+    text = _ensure_blank_line_after_headers(text)
     lines = text.split("\n")
     out: list[str] = []
     for line in lines:

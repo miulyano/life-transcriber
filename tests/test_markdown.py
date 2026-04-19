@@ -50,3 +50,26 @@ def test_escape_then_bold_order():
         markdown_to_telegram_html("**a < b** ok")
         == "<b>a &lt; b</b> ok"
     )
+
+
+def test_blank_line_inserted_after_glued_category_header():
+    # Header ``Категория:`` glued to its content gets a blank line inserted so
+    # the rendered summary visually separates the header from items.
+    assert (
+        markdown_to_telegram_html("Категория:\nтекст категории")
+        == "Категория:\n\nтекст категории"
+    )
+
+
+def test_blank_line_not_inserted_when_already_present():
+    assert (
+        markdown_to_telegram_html("Категория:\n\nтекст")
+        == "Категория:\n\nтекст"
+    )
+
+
+def test_blank_line_not_inserted_when_no_trailing_colon():
+    assert (
+        markdown_to_telegram_html("Просто строка\nещё строка")
+        == "Просто строка\nещё строка"
+    )

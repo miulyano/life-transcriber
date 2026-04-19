@@ -8,6 +8,7 @@ from typing import Awaitable, Callable, Optional
 from openai import AsyncOpenAI
 
 from bot.config import settings
+from bot.services.ffmpeg_runner import run_ffmpeg
 from bot.utils.fake_progress import FractionCallback
 
 MAX_WHISPER_BYTES = 24 * 1024 * 1024  # 24 MB (Whisper limit is 25 MB)
@@ -107,20 +108,31 @@ async def _split_audio(audio_path: str) -> list[str]:
     base = Path(audio_path).stem
     out_dir = Path(audio_path).parent
     pattern = str(out_dir / f"{base}_chunk_%03d.mp3")
+    chunk_glob = f"{base}_chunk_*.mp3"
 
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y",
-        "-i", audio_path,
-        "-f", "segment",
-        "-segment_time", str(CHUNK_DURATION_SECONDS),
-        "-ar", "16000",
-        "-ac", "1",
-        "-acodec", "mp3",
-        pattern,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.communicate()
+    try:
+        await run_ffmpeg(
+            "-i",
+            audio_path,
+            "-f",
+            "segment",
+            "-segment_time",
+            str(CHUNK_DURATION_SECONDS),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-acodec",
+            "mp3",
+            pattern,
+        )
+    except RuntimeError:
+        for chunk in out_dir.glob(chunk_glob):
+            with suppress(OSError):
+                chunk.unlink()
+        raise
 
-    chunks = sorted(out_dir.glob(f"{base}_chunk_*.mp3"))
+    chunks = sorted(out_dir.glob(chunk_glob))
+    if not chunks:
+        raise RuntimeError("ffmpeg did not produce audio chunks")
     return [str(c) for c in chunks]

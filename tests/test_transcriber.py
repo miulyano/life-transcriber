@@ -141,3 +141,43 @@ async def test_chunked_path_calls_on_progress(tmp_path, monkeypatch):
     assert calls[0] == (0, 3)      # initial (0, N)
     assert calls[-1] == (3, 3)     # final (N, N)
     assert len(calls) == 4         # (0,3), (1,3), (2,3), (3,3)
+
+
+@pytest.mark.asyncio
+async def test_split_audio_raises_when_ffmpeg_produces_no_chunks(tmp_path, monkeypatch):
+    audio = _make_audio_file(tmp_path, 1024)
+    calls = []
+
+    async def fake_run_ffmpeg(*args):
+        calls.append(args)
+
+    monkeypatch.setattr(transcriber_module, "run_ffmpeg", fake_run_ffmpeg)
+
+    with pytest.raises(RuntimeError, match="ffmpeg did not produce audio chunks"):
+        await transcriber_module._split_audio(audio)
+
+    args = calls[0]
+    assert args[:2] == ("-i", audio)
+    assert args[args.index("-f") + 1] == "segment"
+    assert args[args.index("-segment_time") + 1] == str(transcriber_module.CHUNK_DURATION_SECONDS)
+    assert args[-1].endswith("_chunk_%03d.mp3")
+
+
+@pytest.mark.asyncio
+async def test_split_audio_cleans_partial_chunks_after_ffmpeg_failure(tmp_path, monkeypatch):
+    audio = _make_audio_file(tmp_path, 1024)
+    partial_a = tmp_path / "audio_chunk_000.mp3"
+    partial_b = tmp_path / "audio_chunk_001.mp3"
+
+    async def fake_run_ffmpeg(*_args):
+        partial_a.write_bytes(b"a")
+        partial_b.write_bytes(b"b")
+        raise RuntimeError("ffmpeg failed with code 1")
+
+    monkeypatch.setattr(transcriber_module, "run_ffmpeg", fake_run_ffmpeg)
+
+    with pytest.raises(RuntimeError, match="ffmpeg failed with code 1"):
+        await transcriber_module._split_audio(audio)
+
+    assert not partial_a.exists()
+    assert not partial_b.exists()

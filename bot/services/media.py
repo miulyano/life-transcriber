@@ -1,6 +1,7 @@
-import asyncio
 import os
 import uuid
+
+from bot.services.ffmpeg_runner import run_ffmpeg
 
 
 async def prepare_audio_for_transcription(input_path: str, output_dir: str) -> str:
@@ -8,21 +9,21 @@ async def prepare_audio_for_transcription(input_path: str, output_dir: str) -> s
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.mp3")
 
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y",
-        "-i", input_path,
-        "-vn",
-        "-ar", "16000",
-        "-ac", "1",
-        "-acodec", "mp3",
-        out_path,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await proc.communicate()
-
-    if proc.returncode != 0:
+    try:
+        await run_ffmpeg(
+            "-i",
+            input_path,
+            "-vn",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-acodec",
+            "mp3",
+            out_path,
+        )
+    except RuntimeError:
         if os.path.exists(out_path):
             os.unlink(out_path)
-        raise RuntimeError(f"ffmpeg failed with code {proc.returncode}")
+        raise
     return out_path

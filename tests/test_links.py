@@ -4,6 +4,7 @@ import pytest
 
 from bot.handlers import links
 from bot.handlers.links import URL_RE
+from bot.services.user_facing_error import UserFacingError
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -51,6 +52,11 @@ def test_friendly_error_yandex_music():
     assert text == "Пришлите ссылку на конкретный выпуск подкаста"
 
 
+def test_friendly_error_accepts_typed_provider_error():
+    text = links._friendly_error(UserFacingError("facebook", "не удалось скачать видео"))
+    assert text == "Не удалось скачать видео"
+
+
 async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
     events = []
     audio_path = tmp_path / "audio.mp3"
@@ -86,16 +92,18 @@ async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeyp
         audio_path.write_bytes(b"audio")
         return str(audio_path), None
 
-    async def fake_transcribe(path, **_kwargs):
-        events.append(("transcribe", path))
-        return "transcript"
+    async def fake_pipeline(audio_path, *, reporter, deliver_text, filename_hint=None, on_phase_change=None):
+        events.append(("pipeline", audio_path, filename_hint))
+        await reporter.set_phase("Форматирую…")
+        await reporter.set_phase("Отправляю результат…")
+        await deliver_text("transcript")
 
     async def fake_reply_text_or_file(_message, text):
         events.append(("reply", text))
 
     monkeypatch.setattr(links, "ProgressReporter", Reporter)
     monkeypatch.setattr(links, "download_audio", fake_download_audio)
-    monkeypatch.setattr(links, "transcribe", fake_transcribe)
+    monkeypatch.setattr(links, "run_transcription_pipeline", fake_pipeline)
     monkeypatch.setattr(links, "reply_text_or_file", fake_reply_text_or_file)
 
     message = MagicMock()

@@ -1,12 +1,11 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from bot.handlers import video
+from bot.handlers import voice
 
 
-async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
+async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
     events = []
-    audio_path = tmp_path / "audio.mp3"
 
     class Reporter:
         def __init__(self, _message, label):
@@ -33,33 +32,30 @@ async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
 
     async def fake_download(_file_id, destination):
         events.append(("download", destination))
-        Path(destination).write_bytes(b"video")
-
-    async def fake_extract_audio(path, _output_dir):
-        events.append(("extract", path))
-        audio_path.write_bytes(b"audio")
-        return str(audio_path)
+        Path(destination).write_bytes(b"voice")
 
     async def fake_pipeline(audio_path, *, reporter, deliver_text, filename_hint=None, on_phase_change=None):
         events.append(("pipeline", audio_path, filename_hint))
-        await reporter.set_phase("Форматирую…")
-        await reporter.set_phase("Отправляю результат…")
         await deliver_text("transcript")
 
     async def fake_reply_text_or_file(_message, text):
         events.append(("reply", text))
 
-    monkeypatch.setattr(video.settings, "TEMP_DIR", str(tmp_path))
-    monkeypatch.setattr(video, "ProgressReporter", Reporter)
-    monkeypatch.setattr(video, "extract_audio", fake_extract_audio)
-    monkeypatch.setattr(video, "run_transcription_pipeline", fake_pipeline)
-    monkeypatch.setattr(video, "reply_text_or_file", fake_reply_text_or_file)
+    monkeypatch.setattr(voice.settings, "TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr(voice, "ProgressReporter", Reporter)
+    monkeypatch.setattr(voice, "run_transcription_pipeline", fake_pipeline)
+    monkeypatch.setattr(voice, "reply_text_or_file", fake_reply_text_or_file)
 
     bot = MagicMock()
     bot.download = AsyncMock(side_effect=fake_download)
     message = MagicMock()
 
-    await video._process(message, bot, "file-id", ".mp4")
+    await voice._handle(message, bot, "file-id", ".ogg", "Транскрибирую…")
 
-    assert events.index(("phase", "Отправляю результат…")) < events.index(("reply", "transcript"))
+    pipeline_event = next(
+        event
+        for event in events
+        if isinstance(event, tuple) and event[0] == "pipeline"
+    )
+    assert pipeline_event[1].endswith(".ogg")
     assert events.index(("reply", "transcript")) < events.index("finish")

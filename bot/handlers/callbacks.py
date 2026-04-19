@@ -13,6 +13,13 @@ from bot.utils.text import _store_text, get_cached_text
 
 router = Router()
 
+# Telegram rejects text messages over 4096 chars with
+# "Bad Request: message is too long". We leave headroom for the
+# "📝 Краткий конспект:\n\n" prefix and for HTML tags that
+# ``markdown_to_telegram_html`` may inject (each `<b>...</b>` adds ≥7 chars,
+# and long summaries can accumulate dozens of them).
+TELEGRAM_TEXT_LIMIT = 3800
+
 
 async def _extract_text_from_message(callback: CallbackQuery) -> Optional[str]:
     msg = callback.message
@@ -92,10 +99,25 @@ async def handle_summary(callback: CallbackQuery) -> None:
         summary = await summarize(text, on_progress=reporter.set_progress)
         await reporter.set_phase("Отправляю результат…")
         body = markdown_to_telegram_html(summary)
-        await callback.message.reply(
-            f"📝 Краткий конспект:\n\n{body}",
-            parse_mode="HTML",
-        )
+        message = f"📝 Краткий конспект:\n\n{body}"
+        if len(message) <= TELEGRAM_TEXT_LIMIT:
+            await callback.message.reply(message, parse_mode="HTML")
+        else:
+            # Telegram text-message limit is ~4096; long summaries go as a
+            # plain-text file instead so the user still gets the full thing.
+            original_title = extract_title(text)
+            filename = build_filename(
+                f"{original_title} summary" if original_title else "summary",
+            )
+            caption = (
+                f"📝 Краткий конспект: {original_title}"
+                if original_title
+                else "📝 Краткий конспект (длинный — прислал файлом)"
+            )
+            await callback.message.reply_document(
+                BufferedInputFile(summary.encode("utf-8"), filename=filename),
+                caption=caption,
+            )
         await reporter.finish()
 
 

@@ -143,6 +143,47 @@ async def test_handle_summary_fallback_recaches():
     assert text_mod.get_cached_text(h) == "recache me"
 
 
+async def test_handle_summary_long_sends_as_file():
+    source_text = "Оригинальный заголовок\n\nДлинный исходный текст."
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"summary:{h}"
+    cb.message.reply = AsyncMock()
+    cb.message.reply_document = AsyncMock()
+
+    # Summary that exceeds TELEGRAM_TEXT_LIMIT after HTML prefix/wrapping.
+    long_summary = "очень длинный конспект " * 500
+
+    with patch("bot.handlers.callbacks.summarize", new_callable=AsyncMock) as mock_sum:
+        mock_sum.return_value = long_summary
+        await handle_summary(cb)
+
+    cb.message.reply.assert_not_awaited()
+    cb.message.reply_document.assert_awaited_once()
+    sent_file = cb.message.reply_document.await_args.args[0]
+    body = sent_file.data.decode("utf-8")
+    # File contains the raw plain-text summary, not HTML.
+    assert body == long_summary
+    caption = cb.message.reply_document.await_args.kwargs["caption"]
+    assert "Оригинальный заголовок" in caption
+
+
+async def test_handle_summary_short_still_sends_as_text():
+    source_text = "Заголовок\n\nКороткий текст."
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"summary:{h}"
+    cb.message.reply = AsyncMock()
+    cb.message.reply_document = AsyncMock()
+
+    with patch("bot.handlers.callbacks.summarize", new_callable=AsyncMock) as mock_sum:
+        mock_sum.return_value = "Короткий конспект."
+        await handle_summary(cb)
+
+    cb.message.reply.assert_awaited_once()
+    cb.message.reply_document.assert_not_awaited()
+
+
 async def test_handle_summary_no_text_anywhere():
     cb = _make_callback(is_inaccessible=True)
     cb.data = "summary:nonexistent_hash"

@@ -14,6 +14,12 @@ from bot.utils.fake_progress import FractionCallback
 MAX_WHISPER_BYTES = 24 * 1024 * 1024  # 24 MB (Whisper limit is 25 MB)
 CHUNK_DURATION_SECONDS = 600  # 10 minutes per chunk
 
+# How many Whisper chunk requests run concurrently. 3 keeps us well under
+# OpenAI's default Whisper rate limits and avoids opening too many sockets /
+# holding too many file handles at once, while eliminating the wall-clock
+# penalty of strictly-sequential per-chunk awaits on long inputs.
+WHISPER_PARALLELISM = 3
+
 # Fake-progress rate estimate for non-chunked Whisper calls (no real progress signal).
 FAKE_RATE_BYTES_PER_SEC = 200_000
 FAKE_TICK_SECONDS = 0.5
@@ -32,17 +38,7 @@ async def transcribe(
     file_size = os.path.getsize(audio_path)
     if file_size > MAX_WHISPER_BYTES:
         chunks = await _split_audio(audio_path)
-        total = len(chunks)
-        if on_progress is not None:
-            await on_progress(0, total)
-        parts = []
-        for i, chunk in enumerate(chunks):
-            try:
-                parts.append(await _transcribe_file(chunk))
-            finally:
-                os.unlink(chunk)
-            if on_progress is not None:
-                await on_progress(i + 1, total)
+        parts = await _transcribe_chunks_parallel(chunks, on_progress)
         return " ".join(parts)
 
     if on_progress_fraction is None:
@@ -92,6 +88,59 @@ async def _run_with_fake_progress(
     with suppress(Exception):
         await on_progress_fraction(1.0)
     return result
+
+
+async def _transcribe_chunks_parallel(
+    chunks: list[str], on_progress: Optional[ProgressCallback]
+) -> list[str]:
+    """Transcribe chunks concurrently (bounded by ``WHISPER_PARALLELISM``).
+
+    Chunk files are unlinked as soon as their transcription finishes (or
+    fails), so a crash in one task does not leave the others' temp files
+    behind. ``on_progress`` is invoked by completion order, not chunk index;
+    the final ``(total, total)`` report is still guaranteed because every
+    task either completes or cancels before this function returns.
+
+    If any chunk fails, the remaining in-flight tasks are cancelled and we
+    wait for them to run their cleanup (``finally: os.unlink``) before
+    re-raising — otherwise Python's default ``asyncio.gather`` would leave
+    siblings orphaned and their chunk files would leak.
+    """
+    total = len(chunks)
+    if on_progress is not None:
+        await on_progress(0, total)
+
+    semaphore = asyncio.Semaphore(WHISPER_PARALLELISM)
+    done_count = 0
+    lock = asyncio.Lock()
+
+    async def run(chunk: str) -> str:
+        nonlocal done_count
+        try:
+            async with semaphore:
+                text = await _transcribe_file(chunk)
+        finally:
+            with suppress(OSError):
+                os.unlink(chunk)
+        if on_progress is not None:
+            async with lock:
+                done_count += 1
+                current = done_count
+            await on_progress(current, total)
+        return text
+
+    tasks = [asyncio.create_task(run(c)) for c in chunks]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        # Let every task finish its `finally` before we re-raise — otherwise
+        # cancelled tasks are still running in the background when the caller
+        # checks for leftover files.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _transcribe_file(path: str) -> str:

@@ -295,10 +295,33 @@ def test_ensure_title_when_first_line_matches_returns_unchanged():
     assert _ensure_title_in_cleaned(cleaned, "Заголовок") == cleaned
 
 
-def test_ensure_title_when_first_line_paraphrased_replaces_it():
+def test_ensure_title_when_first_line_paraphrased_prepends_without_dropping():
+    # Previously: the function tried to detect a "paraphrased" title and
+    # dropped the first block. That heuristic chewed off real first
+    # paragraphs — see test_ensure_title_does_not_drop_first_paragraph below.
+    # New behavior: if the first line doesn't match verbatim, just prepend
+    # the original. A near-duplicate in the output is acceptable; a missing
+    # opening paragraph is not.
     cleaned = "Перефразированный заголовок\n\nтело текста."
     out = _ensure_title_in_cleaned(cleaned, "Оригинал")
-    assert out.startswith("Оригинал\n\nтело текста.")
+    assert (
+        out
+        == "Оригинал\n\nПерефразированный заголовок\n\nтело текста."
+    )
+
+
+def test_ensure_title_does_not_drop_first_paragraph_when_title_glued_or_missing():
+    # Regression: the model sometimes omits the blank line between title and
+    # first paragraph, or drops the title entirely. In both cases the old
+    # ``body.split("\n\n", 1)[1]`` deleted real content.
+    cleaned = (
+        "Перефраз заголовка\n"  # glued — single \n, not \n\n
+        "Первый важный абзац, который раньше терялся.\n\n"
+        "Второй абзац."
+    )
+    out = _ensure_title_in_cleaned(cleaned, "Оригинал")
+    assert "Первый важный абзац, который раньше терялся." in out
+    assert out.startswith("Оригинал\n\n")
 
 
 def test_ensure_title_when_first_line_is_speaker_prefix_prepends_title():

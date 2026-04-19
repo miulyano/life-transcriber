@@ -44,42 +44,24 @@ async def _resolve_text(callback: CallbackQuery, text_hash: str) -> Optional[str
     return text
 
 
-def _looks_like_title_line(line: str) -> bool:
-    """A short single-line heading without speaker-style ``Label:`` prefix."""
-    if not line or len(line) > 100:
-        return False
-    if "\n" in line:
-        return False
-    # Speaker labels look like ``Name:`` or ``Спикер 1:`` — those are reply
-    # prefixes, not titles, so we should NOT treat the first line as a title
-    # to drop in that case.
-    if ":" in line:
-        before_colon = line.split(":", 1)[0]
-        if 1 <= len(before_colon) <= 40 and "\n" not in before_colon:
-            return False
-    return True
-
-
 def _ensure_title_in_cleaned(cleaned: str, original_title: Optional[str]) -> str:
-    """Re-prepend ``original_title`` if cleanup model dropped or rewrote it."""
+    """Prepend ``original_title`` if the cleanup model didn't preserve it verbatim.
+
+    Earlier versions tried to detect a "paraphrased" first line and drop it
+    from the body. That heuristic (short + no speaker colon) matched plain
+    first-paragraph content far more often than real paraphrased titles and
+    silently deleted the opening of long transcripts. Safer rule: only treat
+    a verbatim match as "title already present"; otherwise prepend the
+    original and keep the full cleaned body intact. Worst case this yields a
+    visible near-duplicate (original title + paraphrased first line) — much
+    better than a silently missing paragraph.
+    """
     if not original_title:
         return cleaned
     cleaned_first_line = extract_title(cleaned) or ""
     if cleaned_first_line == original_title:
         return cleaned
-    body = cleaned.lstrip()
-    # Treat the first line as a paraphrased title only if cleaned has a clear
-    # title/body split (a blank line after the first line) AND the first line
-    # looks like a heading. Otherwise the whole cleaned text is body — keep it
-    # and just prepend the original title.
-    has_title_block = "\n\n" in body
-    if (
-        has_title_block
-        and cleaned_first_line
-        and _looks_like_title_line(cleaned_first_line)
-    ):
-        body = body.split("\n\n", 1)[1].lstrip()
-    return f"{original_title}\n\n{body}"
+    return f"{original_title}\n\n{cleaned.lstrip()}"
 
 
 @router.callback_query(F.data.startswith("summary:"))

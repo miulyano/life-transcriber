@@ -7,8 +7,7 @@ from aiogram import Bot, F, Router
 from aiogram.types import Message
 
 from bot.config import settings
-from bot.services.formatter import format_transcript
-from bot.services.transcriber import transcribe
+from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
 
@@ -23,27 +22,20 @@ async def _download_tg_file(bot: Bot, file_id: str, suffix: str) -> str:
 
 
 async def _handle(message: Message, bot: Bot, file_id: str, suffix: str, label: str) -> None:
-    text: str | None = None
     async with ProgressReporter(message, label) as reporter:
         dest = await _download_tg_file(bot, file_id, suffix)
         try:
-            text = await transcribe(
+            async def deliver_text(text: str) -> None:
+                await reply_text_or_file(message, text)
+
+            await run_transcription_pipeline(
                 dest,
-                on_progress=reporter.set_progress,
-                on_progress_fraction=reporter.set_progress_fraction,
+                reporter=reporter,
+                deliver_text=deliver_text,
             )
         finally:
             if os.path.exists(dest):
                 os.unlink(dest)
-        if text is not None:
-            await reporter.set_phase("Форматирую…")
-            text = await format_transcript(
-                text,
-                on_progress=reporter.set_progress,
-                on_progress_fraction=reporter.set_progress_fraction,
-            )
-            await reporter.set_phase("Отправляю результат…")
-            await reply_text_or_file(message, text)
         await reporter.finish()
 
 

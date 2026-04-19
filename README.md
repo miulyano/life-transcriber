@@ -316,10 +316,15 @@ life-transcriber/
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект, chunking длинных текстов
 │   │   ├── instagram.py         # Instagram Reels через Cobalt API
 │   │   ├── facebook.py          # Facebook Videos/Reels через Cobalt API
+│   │   ├── cobalt_client.py     # Общий клиент для Cobalt API (Instagram/Facebook)
 │   │   ├── yandex_disk.py       # Публичное API Яндекс Диска; раздельные таймауты API/скачивания
 │   │   ├── yandex_music.py      # URL выпусков подкастов Яндекс Музыки
+│   │   ├── ffmpeg_runner.py     # Общий запуск FFmpeg с единым error handling
 │   │   ├── media.py             # Подготовка audio-only MP3 через FFmpeg
+│   │   ├── stream_download.py   # Общая потоковая запись HTTP-скачиваний во временный файл
+│   │   ├── transcription_pipeline.py # Общий flow: transcribe -> format -> deliver
 │   │   ├── temp_cleanup.py      # Периодическая очистка старых файлов из TEMP_DIR
+│   │   ├── user_facing_error.py # Типизированные provider-ошибки без потери старого текста
 │   │   └── downloader.py        # Диспетчер: Яндекс Диск / Instagram / Facebook / Яндекс Музыка / yt-dlp + FFmpeg
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
 │   └── utils/

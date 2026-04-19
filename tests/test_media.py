@@ -7,39 +7,31 @@ import bot.services.media as media_module
 from bot.services.media import prepare_audio_for_transcription
 
 
-class _FakeProcess:
-    def __init__(self, returncode: int):
-        self.returncode = returncode
-
-    async def communicate(self):
-        return None
-
-
 @pytest.mark.asyncio
 async def test_prepare_audio_for_transcription_runs_ffmpeg(tmp_path, monkeypatch):
     source = tmp_path / "upload.mp4"
     source.write_bytes(b"video")
     calls = []
 
-    async def fake_exec(*args, **kwargs):
-        calls.append((args, kwargs))
-        Path(args[-1]).write_bytes(b"audio")
-        return _FakeProcess(0)
+    async def fake_run_ffmpeg(*args):
+        calls.append(args)
+        (tmp_path / "prepared.mp3").write_bytes(b"audio")
+        (tmp_path / "prepared.mp3").replace(args[-1])
 
-    monkeypatch.setattr(media_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(media_module, "run_ffmpeg", fake_run_ffmpeg)
 
     result = await prepare_audio_for_transcription(str(source), str(tmp_path))
 
-    assert Path(result).suffix == ".mp3"
-    assert Path(result).read_bytes() == b"audio"
-    args, kwargs = calls[0]
-    assert args[:4] == ("ffmpeg", "-y", "-i", str(source))
+    result_path = Path(result)
+    assert result.endswith(".mp3")
+    assert result_path.read_bytes() == b"audio"
+    args = calls[0]
+    assert args[:2] == ("-i", str(source))
     assert "-vn" in args
     assert args[args.index("-ar") + 1] == "16000"
     assert args[args.index("-ac") + 1] == "1"
     assert args[args.index("-acodec") + 1] == "mp3"
-    assert kwargs["stdout"] == media_module.asyncio.subprocess.DEVNULL
-    assert kwargs["stderr"] == media_module.asyncio.subprocess.DEVNULL
+    assert args[-1] == result
 
 
 @pytest.mark.asyncio
@@ -48,13 +40,13 @@ async def test_prepare_audio_for_transcription_removes_partial_file(tmp_path, mo
     source.write_bytes(b"not media")
     output_paths = []
 
-    async def fake_exec(*args, **_kwargs):
+    async def fake_run_ffmpeg(*args):
         out_path = Path(args[-1])
         out_path.write_bytes(b"partial")
         output_paths.append(out_path)
-        return _FakeProcess(1)
+        raise RuntimeError("ffmpeg failed with code 1")
 
-    monkeypatch.setattr(media_module.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(media_module, "run_ffmpeg", fake_run_ffmpeg)
 
     with pytest.raises(RuntimeError, match="ffmpeg failed with code 1"):
         await prepare_audio_for_transcription(str(source), str(tmp_path))

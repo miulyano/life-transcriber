@@ -28,9 +28,16 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
         calls.append(("prepare", path, output_dir))
         return str(audio)
 
-    async def fake_transcribe(path: str, on_progress=None, on_progress_fraction=None) -> str:
-        calls.append(("transcribe", path))
-        return "готовый текст"
+    async def fake_pipeline(
+        audio_path: str,
+        *,
+        reporter,
+        deliver_text,
+        filename_hint=None,
+        on_phase_change=None,
+    ) -> None:
+        calls.append(("pipeline", audio_path, filename_hint))
+        await deliver_text("готовый текст")
 
     send_transcript = AsyncMock()
     monkeypatch.setattr(webapp_main, "Bot", MagicMock(return_value=bot))
@@ -39,14 +46,14 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
         "prepare_audio_for_transcription",
         fake_prepare,
     )
-    monkeypatch.setattr(webapp_main, "transcribe", fake_transcribe)
+    monkeypatch.setattr(webapp_main, "run_transcription_pipeline", fake_pipeline)
     monkeypatch.setattr(webapp_main, "send_transcript_to_chat", send_transcript)
 
     await webapp_main._process_upload(str(source), user_id=111)
 
     assert calls == [
         ("prepare", str(source), webapp_main.settings.TEMP_DIR),
-        ("transcribe", str(audio)),
+        ("pipeline", str(audio), None),
     ]
     send_transcript.assert_awaited_once_with(bot, 111, "готовый текст")
     bot.send_message.assert_awaited_once()
@@ -72,7 +79,7 @@ async def test_process_upload_reports_failure_and_cleans_source(tmp_path, monkey
     async def fake_prepare(_path: str, _output_dir: str) -> str:
         raise RuntimeError("bad media")
 
-    transcribe = AsyncMock()
+    pipeline = AsyncMock()
     send_transcript = AsyncMock()
     monkeypatch.setattr(webapp_main, "Bot", MagicMock(return_value=bot))
     monkeypatch.setattr(
@@ -80,12 +87,12 @@ async def test_process_upload_reports_failure_and_cleans_source(tmp_path, monkey
         "prepare_audio_for_transcription",
         fake_prepare,
     )
-    monkeypatch.setattr(webapp_main, "transcribe", transcribe)
+    monkeypatch.setattr(webapp_main, "run_transcription_pipeline", pipeline)
     monkeypatch.setattr(webapp_main, "send_transcript_to_chat", send_transcript)
 
     await webapp_main._process_upload(str(source), user_id=111)
 
-    transcribe.assert_not_awaited()
+    pipeline.assert_not_awaited()
     send_transcript.assert_not_awaited()
 
     fail_edits = [

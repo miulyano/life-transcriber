@@ -15,10 +15,9 @@ from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
 from bot.config import settings
-from bot.services.formatter import format_transcript
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
-from bot.services.transcriber import transcribe
+from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.utils.progress import ProgressReporter
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
@@ -87,26 +86,36 @@ async def _process_upload(
                 await reporter.set_phase("Транскрибирую…")
 
                 transcribe_started_at = time.monotonic()
-                text = await transcribe(
+                timings: dict[str, float] = {}
+
+                async def on_phase_change(label: str) -> None:
+                    now = time.monotonic()
+                    if label == "Форматирую…":
+                        timings["transcribe_seconds"] = now - transcribe_started_at
+                        timings["format_started_at"] = now
+                    elif label == "Отправляю результат…":
+                        format_started_at = timings.get("format_started_at", now)
+                        timings["format_seconds"] = now - format_started_at
+                        timings["delivery_started_at"] = now
+
+                async def deliver_text(text: str) -> None:
+                    await send_transcript_to_chat(bot, user_id, text)
+
+                await run_transcription_pipeline(
                     audio_path,
-                    on_progress=reporter.set_progress,
-                    on_progress_fraction=reporter.set_progress_fraction,
-                )
-                transcribe_seconds = time.monotonic() - transcribe_started_at
-
-                await reporter.set_phase("Форматирую…")
-                format_started_at = time.monotonic()
-                text = await format_transcript(
-                    text,
+                    reporter=reporter,
+                    deliver_text=deliver_text,
                     filename_hint=filename_hint,
-                    on_progress=reporter.set_progress,
-                    on_progress_fraction=reporter.set_progress_fraction,
+                    on_phase_change=on_phase_change,
                 )
-                format_seconds = time.monotonic() - format_started_at
-
-                delivery_started_at = time.monotonic()
-                await send_transcript_to_chat(bot, user_id, text)
-                delivery_seconds = time.monotonic() - delivery_started_at
+                now = time.monotonic()
+                transcribe_seconds = timings.get(
+                    "transcribe_seconds",
+                    now - transcribe_started_at,
+                )
+                format_seconds = timings.get("format_seconds", 0.0)
+                delivery_started_at = timings.get("delivery_started_at", now)
+                delivery_seconds = now - delivery_started_at
                 await reporter.finish()
 
                 logger.info(

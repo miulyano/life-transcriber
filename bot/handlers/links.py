@@ -8,8 +8,8 @@ from aiogram.types import Message
 
 from bot.config import settings
 from bot.services.downloader import download_audio
-from bot.services.formatter import format_transcript
-from bot.services.transcriber import transcribe
+from bot.services.transcription_pipeline import run_transcription_pipeline
+from bot.services.user_facing_error import UserFacingError
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
 
@@ -18,7 +18,11 @@ router = Router()
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
-def _friendly_error(error_msg: str) -> str:
+def _friendly_error(error: Exception | str) -> str:
+    if isinstance(error, UserFacingError):
+        error_msg = f"{error.provider}: {error.detail}"
+    else:
+        error_msg = str(error)
     if error_msg.startswith("instagram:"):
         detail = error_msg.split(":", 1)[1].strip()
         if not detail:
@@ -51,31 +55,25 @@ async def handle_link(message: Message) -> None:
 
     audio_path: str | None = None
     source_title: str | None = None
-    text: str | None = None
     async with ProgressReporter(message, "Скачиваю аудио по ссылке…") as reporter:
         try:
             try:
                 audio_path, source_title = await download_audio(url, settings.TEMP_DIR)
             except RuntimeError as e:
-                await reporter.fail(_friendly_error(str(e)))
+                await reporter.fail(_friendly_error(e))
                 return
             await reporter.set_phase("Транскрибирую…")
-            text = await transcribe(
+
+            async def deliver_text(text: str) -> None:
+                await reply_text_or_file(message, text)
+
+            await run_transcription_pipeline(
                 audio_path,
-                on_progress=reporter.set_progress,
-                on_progress_fraction=reporter.set_progress_fraction,
+                reporter=reporter,
+                deliver_text=deliver_text,
+                filename_hint=source_title,
             )
         finally:
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
-        if text is not None:
-            await reporter.set_phase("Форматирую…")
-            text = await format_transcript(
-                text,
-                filename_hint=source_title,
-                on_progress=reporter.set_progress,
-                on_progress_fraction=reporter.set_progress_fraction,
-            )
-            await reporter.set_phase("Отправляю результат…")
-            await reply_text_or_file(message, text)
         await reporter.finish()

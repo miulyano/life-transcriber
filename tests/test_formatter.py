@@ -298,6 +298,107 @@ def test_postprocess_combines_strip_and_normalize():
     )
 
 
+# ---------- merge adjacent same-speaker replies ----------
+
+
+def test_merge_adjacent_same_speaker_folds_duplicate_labels():
+    text = (
+        "Спикер 1: первая часть мысли.\n\n"
+        "Спикер 1: продолжение той же мысли.\n\n"
+        "Спикер 2: ответ."
+    )
+    merged = formatter._merge_adjacent_same_speaker(text)
+    assert merged == (
+        "Спикер 1: первая часть мысли. продолжение той же мысли.\n\n"
+        "Спикер 2: ответ."
+    )
+
+
+def test_merge_adjacent_same_speaker_leaves_different_labels_alone():
+    text = "Иван: один.\n\nМария: два.\n\nИван: три."
+    assert formatter._merge_adjacent_same_speaker(text) == text
+
+
+def test_merge_adjacent_same_speaker_collapses_three_in_a_row():
+    text = "Спикер 1: a.\n\nСпикер 1: b.\n\nСпикер 1: c."
+    assert formatter._merge_adjacent_same_speaker(text) == "Спикер 1: a. b. c."
+
+
+def test_merge_adjacent_same_speaker_leaves_monologue_prose_untouched():
+    text = "Заголовок\n\nПервый абзац.\n\nВторой абзац без меток."
+    assert formatter._merge_adjacent_same_speaker(text) == text
+
+
+def test_postprocess_integrates_merge_with_normalization():
+    # Model emits `Speaker N` twice in a row — normalize THEN merge.
+    text = "Speaker 1: один.\n\nspeaker 1: два."
+    assert formatter._postprocess_speakers(text) == "Спикер 1: один. два."
+
+
+# ---------- previous raw tail in continuation message ----------
+
+
+def test_build_continuation_includes_previous_raw_tail():
+    msg = formatter._build_continuation_user_message(
+        chunk_text="новый фрагмент",
+        filename_hint=None,
+        speaker_samples=[("Иван", "последняя реплика")],
+        last_speaker="Иван",
+        previous_raw_tail="конец предыдущего сырого текста",
+    )
+    assert "Хвост сырого текста предыдущего фрагмента" in msg
+    assert "конец предыдущего сырого текста" in msg
+    assert "не включай его в ответ" in msg
+    # Labels block and new chunk still present.
+    assert "Иван" in msg
+    assert "новый фрагмент" in msg
+
+
+def test_build_continuation_omits_raw_tail_block_when_absent():
+    msg = formatter._build_continuation_user_message(
+        chunk_text="новый фрагмент",
+        filename_hint=None,
+        speaker_samples=[("Иван", "последняя реплика")],
+        last_speaker="Иван",
+    )
+    assert "Хвост сырого текста" not in msg
+
+
+async def test_chunked_flow_passes_previous_raw_tail_to_continuation(monkeypatch):
+    raw = _long_raw(20_000)
+    create = AsyncMock(
+        side_effect=[
+            _response("Title"),
+            _response("Иван: первая реплика."),
+            _response("Иван: продолжение."),
+            _response("Иван: ещё."),
+            _response("Иван: хвост."),
+            _response("Иван: хвост2."),
+        ]
+    )
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    await formatter.format_transcript(raw)
+
+    # Every continuation call (index >=2) must carry the raw tail block.
+    continuation_calls = create.await_args_list[2:]
+    assert continuation_calls, "test precondition: input must produce continuations"
+    for call in continuation_calls:
+        user_msg = call.kwargs["messages"][1]["content"]
+        assert "Хвост сырого текста предыдущего фрагмента" in user_msg
+
+
+# ---------- temperature is deterministic ----------
+
+
+async def test_format_calls_use_temperature_zero(monkeypatch):
+    create = AsyncMock(return_value=_response("Title\n\nbody"))
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    await formatter.format_transcript("short input")
+    assert create.await_args.kwargs["temperature"] == 0.0
+
+
 # ---------- speaker samples ----------
 
 

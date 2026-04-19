@@ -123,8 +123,52 @@ def _normalize_speaker_labels(text: str) -> str:
     return _SPEAKER_NUMBERED_RE.sub(r"Спикер \1\2", text)
 
 
+# A paragraph-block that starts with a speaker label. DOTALL lets the body
+# span multiple lines — rare but possible when the model adds a mid-reply line
+# break.
+_LABELED_BLOCK_RE = re.compile(r"^([^\n:]{1,40}?):\s(.*)", re.DOTALL | re.UNICODE)
+
+
+def _merge_adjacent_same_speaker(text: str) -> str:
+    """Merge two consecutive paragraphs labelled by the same speaker.
+
+    The model sometimes splits a single utterance into two `Label: ...`
+    paragraphs separated by a blank line. We fold the second into the first
+    so the reply reads as one. Intentionally conservative: we only merge
+    when the labels match exactly; we never "guess" that a different-label
+    reply really belongs to the previous speaker — that would paper over the
+    real misattribution instead of fixing it.
+    """
+    blocks = re.split(r"\n{2,}", text)
+    merged: list[str] = []
+    prev_label: Optional[str] = None
+    for block in blocks:
+        match = _LABELED_BLOCK_RE.match(block)
+        if not match:
+            merged.append(block)
+            prev_label = None
+            continue
+        label = match.group(1).strip()
+        body = match.group(2).strip()
+        if not label or label.lower() in {"http", "https", "ftp"}:
+            merged.append(block)
+            prev_label = None
+            continue
+        if label == prev_label and merged:
+            # Fold into previous block: keep its `Label: ` prefix, append this
+            # body with a space so it reads as one continuous reply.
+            merged[-1] = f"{merged[-1]} {body}".rstrip()
+            continue
+        merged.append(block)
+        prev_label = label
+    return "\n\n".join(merged)
+
+
 def _postprocess_speakers(text: str) -> str:
-    return _normalize_speaker_labels(_strip_speaker_brackets(text))
+    text = _strip_speaker_brackets(text)
+    text = _normalize_speaker_labels(text)
+    text = _merge_adjacent_same_speaker(text)
+    return text
 
 
 def _collect_speaker_samples(
@@ -178,11 +222,18 @@ def _build_chunk_user_message(chunk_text: str, filename_hint: Optional[str]) -> 
     return "\n\n".join(parts)
 
 
+# How many characters of the previous RAW chunk to replay into the
+# continuation prompt as context. 400 covers 1–3 sentences of Russian speech
+# across most seam patterns without bloating the request.
+PREVIOUS_RAW_TAIL_CHARS = 400
+
+
 def _build_continuation_user_message(
     chunk_text: str,
     filename_hint: Optional[str],
     speaker_samples: list[tuple[str, str]],
     last_speaker: Optional[str],
+    previous_raw_tail: Optional[str] = None,
 ) -> str:
     parts = []
     if filename_hint:
@@ -204,6 +255,12 @@ def _build_continuation_user_message(
                 "на стыке)."
             )
         parts.append(block)
+    if previous_raw_tail:
+        parts.append(
+            "Хвост сырого текста предыдущего фрагмента (для контекста стыка, "
+            "не включай его в ответ):\n"
+            + previous_raw_tail.strip()
+        )
     parts.append(f"Фрагмент транскрибации (продолжение):\n{chunk_text}")
     return "\n\n".join(parts)
 
@@ -255,7 +312,10 @@ async def _call_openai_raw(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "temperature": 0.2,
+        # temperature=0: determinism matters more than phrasing variety here.
+        # Non-zero temp was a source of random speaker-label drift between
+        # chunks and occasional mid-reply misattributions.
+        "temperature": 0.0,
     }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
@@ -373,15 +433,22 @@ async def _format_chunked(
 
     # Subsequent chunks — carry forward speaker labels with sample replies so
     # the model keeps consistent labels even when the previous chunk's tail is
-    # a long monologue from one speaker.
+    # a long monologue from one speaker. Also replay the tail of the previous
+    # RAW chunk so the model sees the actual words across the seam, not just
+    # formatted samples.
     for i, chunk in enumerate(chunks[1:], start=2):
         accumulated = "\n\n".join(formatted_parts)
         samples, last_speaker = _collect_speaker_samples(accumulated)
+        previous_raw_tail = chunks[i - 2][-PREVIOUS_RAW_TAIL_CHARS:]
         part = await _format_chunk(
             chunk,
             system_prompt=CONTINUATION_SYSTEM_PROMPT,
             user_message=_build_continuation_user_message(
-                chunk, filename_hint, samples, last_speaker
+                chunk,
+                filename_hint,
+                samples,
+                last_speaker,
+                previous_raw_tail=previous_raw_tail,
             ),
         )
         formatted_parts.append(part)

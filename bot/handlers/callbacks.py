@@ -13,6 +13,13 @@ from bot.utils.text import _store_text, get_cached_text
 
 router = Router()
 
+# Telegram rejects text messages over 4096 chars with
+# "Bad Request: message is too long". We leave headroom for the
+# "📝 Краткий конспект:\n\n" prefix and for HTML tags that
+# ``markdown_to_telegram_html`` may inject (each `<b>...</b>` adds ≥7 chars,
+# and long summaries can accumulate dozens of them).
+TELEGRAM_TEXT_LIMIT = 3800
+
 
 async def _extract_text_from_message(callback: CallbackQuery) -> Optional[str]:
     msg = callback.message
@@ -37,42 +44,24 @@ async def _resolve_text(callback: CallbackQuery, text_hash: str) -> Optional[str
     return text
 
 
-def _looks_like_title_line(line: str) -> bool:
-    """A short single-line heading without speaker-style ``Label:`` prefix."""
-    if not line or len(line) > 100:
-        return False
-    if "\n" in line:
-        return False
-    # Speaker labels look like ``Name:`` or ``Спикер 1:`` — those are reply
-    # prefixes, not titles, so we should NOT treat the first line as a title
-    # to drop in that case.
-    if ":" in line:
-        before_colon = line.split(":", 1)[0]
-        if 1 <= len(before_colon) <= 40 and "\n" not in before_colon:
-            return False
-    return True
-
-
 def _ensure_title_in_cleaned(cleaned: str, original_title: Optional[str]) -> str:
-    """Re-prepend ``original_title`` if cleanup model dropped or rewrote it."""
+    """Prepend ``original_title`` if the cleanup model didn't preserve it verbatim.
+
+    Earlier versions tried to detect a "paraphrased" first line and drop it
+    from the body. That heuristic (short + no speaker colon) matched plain
+    first-paragraph content far more often than real paraphrased titles and
+    silently deleted the opening of long transcripts. Safer rule: only treat
+    a verbatim match as "title already present"; otherwise prepend the
+    original and keep the full cleaned body intact. Worst case this yields a
+    visible near-duplicate (original title + paraphrased first line) — much
+    better than a silently missing paragraph.
+    """
     if not original_title:
         return cleaned
     cleaned_first_line = extract_title(cleaned) or ""
     if cleaned_first_line == original_title:
         return cleaned
-    body = cleaned.lstrip()
-    # Treat the first line as a paraphrased title only if cleaned has a clear
-    # title/body split (a blank line after the first line) AND the first line
-    # looks like a heading. Otherwise the whole cleaned text is body — keep it
-    # and just prepend the original title.
-    has_title_block = "\n\n" in body
-    if (
-        has_title_block
-        and cleaned_first_line
-        and _looks_like_title_line(cleaned_first_line)
-    ):
-        body = body.split("\n\n", 1)[1].lstrip()
-    return f"{original_title}\n\n{body}"
+    return f"{original_title}\n\n{cleaned.lstrip()}"
 
 
 @router.callback_query(F.data.startswith("summary:"))
@@ -92,10 +81,25 @@ async def handle_summary(callback: CallbackQuery) -> None:
         summary = await summarize(text, on_progress=reporter.set_progress)
         await reporter.set_phase("Отправляю результат…")
         body = markdown_to_telegram_html(summary)
-        await callback.message.reply(
-            f"📝 Краткий конспект:\n\n{body}",
-            parse_mode="HTML",
-        )
+        message = f"📝 Краткий конспект:\n\n{body}"
+        if len(message) <= TELEGRAM_TEXT_LIMIT:
+            await callback.message.reply(message, parse_mode="HTML")
+        else:
+            # Telegram text-message limit is ~4096; long summaries go as a
+            # plain-text file instead so the user still gets the full thing.
+            original_title = extract_title(text)
+            filename = build_filename(
+                f"{original_title} summary" if original_title else "summary",
+            )
+            caption = (
+                f"📝 Краткий конспект: {original_title}"
+                if original_title
+                else "📝 Краткий конспект (длинный — прислал файлом)"
+            )
+            await callback.message.reply_document(
+                BufferedInputFile(summary.encode("utf-8"), filename=filename),
+                caption=caption,
+            )
         await reporter.finish()
 
 

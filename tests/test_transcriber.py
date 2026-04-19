@@ -144,6 +144,82 @@ async def test_chunked_path_calls_on_progress(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chunked_path_runs_in_parallel_and_preserves_order(
+    tmp_path, monkeypatch
+):
+    """Parallelism: total time ≈ longest chunk, not sum of chunks.
+
+    Also: concatenated result must match chunk order (0,1,2), even though the
+    first-finished task can be any of them.
+    """
+    chunk_count = 3
+
+    async def _fake_split(_path: str) -> list[str]:
+        chunks = []
+        for i in range(chunk_count):
+            p = tmp_path / f"chunk_{i:03d}.mp3"
+            p.write_bytes(b"\0" * 10)
+            chunks.append(str(p))
+        return chunks
+
+    # Each chunk takes 0.2s. Serial: ~0.6s. Parallel (WHISPER_PARALLELISM=3): ~0.2s.
+    per_chunk_sleep = 0.2
+
+    async def _slow_transcribe(path: str) -> str:
+        await asyncio.sleep(per_chunk_sleep)
+        # Encode chunk index in the result so we can verify ordering.
+        idx = int(path.rsplit("_", 1)[1].split(".")[0])
+        return f"part{idx}"
+
+    monkeypatch.setattr(transcriber_module, "_split_audio", _fake_split)
+    monkeypatch.setattr(transcriber_module, "_transcribe_file", _slow_transcribe)
+
+    audio = _make_audio_file(tmp_path, MAX_WHISPER_BYTES + 1)
+
+    started = asyncio.get_event_loop().time()
+    result = await transcribe(audio)
+    elapsed = asyncio.get_event_loop().time() - started
+
+    # Order is preserved.
+    assert result == "part0 part1 part2"
+    # Wall-clock should be much closer to one chunk than to the sum.
+    assert elapsed < per_chunk_sleep * chunk_count * 0.8, (
+        f"expected parallel execution (~{per_chunk_sleep}s), "
+        f"got {elapsed:.3f}s (serial would be ~{per_chunk_sleep * chunk_count}s)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chunked_path_unlinks_chunks_even_on_failure(tmp_path, monkeypatch):
+    """A failing chunk must not leak the other chunks' temp files."""
+    chunks = []
+    for i in range(3):
+        p = tmp_path / f"chunk_{i:03d}.mp3"
+        p.write_bytes(b"\0" * 10)
+        chunks.append(str(p))
+
+    async def _fake_split(_path: str) -> list[str]:
+        return list(chunks)
+
+    async def _transcribe(path: str) -> str:
+        if path.endswith("001.mp3"):
+            raise RuntimeError("whisper exploded")
+        await asyncio.sleep(0.05)
+        return "ok"
+
+    monkeypatch.setattr(transcriber_module, "_split_audio", _fake_split)
+    monkeypatch.setattr(transcriber_module, "_transcribe_file", _transcribe)
+
+    audio = _make_audio_file(tmp_path, MAX_WHISPER_BYTES + 1)
+    with pytest.raises(RuntimeError, match="whisper exploded"):
+        await transcribe(audio)
+
+    # All three chunk files must be gone regardless of which task failed.
+    for chunk in chunks:
+        assert not __import__("os").path.exists(chunk), f"{chunk} leaked"
+
+
+@pytest.mark.asyncio
 async def test_split_audio_raises_when_ffmpeg_produces_no_chunks(tmp_path, monkeypatch):
     audio = _make_audio_file(tmp_path, 1024)
     calls = []

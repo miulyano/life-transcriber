@@ -143,6 +143,47 @@ async def test_handle_summary_fallback_recaches():
     assert text_mod.get_cached_text(h) == "recache me"
 
 
+async def test_handle_summary_long_sends_as_file():
+    source_text = "Оригинальный заголовок\n\nДлинный исходный текст."
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"summary:{h}"
+    cb.message.reply = AsyncMock()
+    cb.message.reply_document = AsyncMock()
+
+    # Summary that exceeds TELEGRAM_TEXT_LIMIT after HTML prefix/wrapping.
+    long_summary = "очень длинный конспект " * 500
+
+    with patch("bot.handlers.callbacks.summarize", new_callable=AsyncMock) as mock_sum:
+        mock_sum.return_value = long_summary
+        await handle_summary(cb)
+
+    cb.message.reply.assert_not_awaited()
+    cb.message.reply_document.assert_awaited_once()
+    sent_file = cb.message.reply_document.await_args.args[0]
+    body = sent_file.data.decode("utf-8")
+    # File contains the raw plain-text summary, not HTML.
+    assert body == long_summary
+    caption = cb.message.reply_document.await_args.kwargs["caption"]
+    assert "Оригинальный заголовок" in caption
+
+
+async def test_handle_summary_short_still_sends_as_text():
+    source_text = "Заголовок\n\nКороткий текст."
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"summary:{h}"
+    cb.message.reply = AsyncMock()
+    cb.message.reply_document = AsyncMock()
+
+    with patch("bot.handlers.callbacks.summarize", new_callable=AsyncMock) as mock_sum:
+        mock_sum.return_value = "Короткий конспект."
+        await handle_summary(cb)
+
+    cb.message.reply.assert_awaited_once()
+    cb.message.reply_document.assert_not_awaited()
+
+
 async def test_handle_summary_no_text_anywhere():
     cb = _make_callback(is_inaccessible=True)
     cb.data = "summary:nonexistent_hash"
@@ -254,10 +295,33 @@ def test_ensure_title_when_first_line_matches_returns_unchanged():
     assert _ensure_title_in_cleaned(cleaned, "Заголовок") == cleaned
 
 
-def test_ensure_title_when_first_line_paraphrased_replaces_it():
+def test_ensure_title_when_first_line_paraphrased_prepends_without_dropping():
+    # Previously: the function tried to detect a "paraphrased" title and
+    # dropped the first block. That heuristic chewed off real first
+    # paragraphs — see test_ensure_title_does_not_drop_first_paragraph below.
+    # New behavior: if the first line doesn't match verbatim, just prepend
+    # the original. A near-duplicate in the output is acceptable; a missing
+    # opening paragraph is not.
     cleaned = "Перефразированный заголовок\n\nтело текста."
     out = _ensure_title_in_cleaned(cleaned, "Оригинал")
-    assert out.startswith("Оригинал\n\nтело текста.")
+    assert (
+        out
+        == "Оригинал\n\nПерефразированный заголовок\n\nтело текста."
+    )
+
+
+def test_ensure_title_does_not_drop_first_paragraph_when_title_glued_or_missing():
+    # Regression: the model sometimes omits the blank line between title and
+    # first paragraph, or drops the title entirely. In both cases the old
+    # ``body.split("\n\n", 1)[1]`` deleted real content.
+    cleaned = (
+        "Перефраз заголовка\n"  # glued — single \n, not \n\n
+        "Первый важный абзац, который раньше терялся.\n\n"
+        "Второй абзац."
+    )
+    out = _ensure_title_in_cleaned(cleaned, "Оригинал")
+    assert "Первый важный абзац, который раньше терялся." in out
+    assert out.startswith("Оригинал\n\n")
 
 
 def test_ensure_title_when_first_line_is_speaker_prefix_prepends_title():

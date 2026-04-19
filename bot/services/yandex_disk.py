@@ -10,6 +10,8 @@ from urllib.parse import urlencode
 
 import aiohttp
 
+from bot.services.user_facing_error import UserFacingError
+
 logger = logging.getLogger(__name__)
 
 YANDEX_DISK_URL_RE = re.compile(
@@ -78,25 +80,29 @@ async def _fetch_meta(session: aiohttp.ClientSession, public_key: str) -> dict:
     url = f"{API_BASE}?{urlencode({'public_key': public_key})}"
     async with session.get(url, timeout=_api_timeout()) as resp:
         if resp.status == 404:
-            raise RuntimeError(
-                "yandex-disk: ссылка приватная, удалена или недействительна"
+            raise UserFacingError(
+                "yandex-disk",
+                "ссылка приватная, удалена или недействительна",
             )
         if resp.status != 200:
-            raise RuntimeError(
-                f"yandex-disk: API метаданных вернул {resp.status}"
+            raise UserFacingError(
+                "yandex-disk",
+                f"API метаданных вернул {resp.status}",
             )
         return await resp.json()
 
 
 def _validate_meta(meta: dict) -> None:
     if meta.get("type") == "dir":
-        raise RuntimeError(
-            "yandex-disk: ссылка ведёт на папку, нужен файл с аудио или видео"
+        raise UserFacingError(
+            "yandex-disk",
+            "ссылка ведёт на папку, нужен файл с аудио или видео",
         )
     media_type = meta.get("media_type")
     if media_type not in {"audio", "video"}:
-        raise RuntimeError(
-            f"yandex-disk: файл не аудио и не видео (media_type={media_type!r})"
+        raise UserFacingError(
+            "yandex-disk",
+            f"файл не аудио и не видео (media_type={media_type!r})",
         )
 
 
@@ -116,13 +122,14 @@ async def _fetch_download_href(
     url = f"{API_BASE}/download?{urlencode({'public_key': public_key})}"
     async with session.get(url, timeout=_api_timeout()) as resp:
         if resp.status != 200:
-            raise RuntimeError(
-                f"yandex-disk: API ссылки на скачивание вернул {resp.status}"
+            raise UserFacingError(
+                "yandex-disk",
+                f"API ссылки на скачивание вернул {resp.status}",
             )
         data = await resp.json()
     href = data.get("href")
     if not href:
-        raise RuntimeError("yandex-disk: API не вернул ссылку на скачивание")
+        raise UserFacingError("yandex-disk", "API не вернул ссылку на скачивание")
     return href
 
 
@@ -134,8 +141,9 @@ async def _download_to_file(
     try:
         async with session.get(href) as resp:
             if resp.status != 200:
-                raise RuntimeError(
-                    f"yandex-disk: скачивание файла вернуло {resp.status}"
+                raise UserFacingError(
+                    "yandex-disk",
+                    f"скачивание файла вернуло {resp.status}",
                 )
             cl = resp.headers.get("Content-Length")
             if cl and cl.isdigit():
@@ -159,9 +167,10 @@ async def _download_to_file(
             logger.warning(
                 "yandex-disk: download stalled after %.1f MB: %r", mb_done, exc
             )
-        raise RuntimeError(
-            "yandex-disk: скачивание прервано — возможно, файл слишком большой "
-            "или соединение нестабильно, попробуй ещё раз"
+        raise UserFacingError(
+            "yandex-disk",
+            "скачивание прервано — возможно, файл слишком большой "
+            "или соединение нестабильно, попробуй ещё раз",
         ) from exc
 
 

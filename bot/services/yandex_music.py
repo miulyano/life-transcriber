@@ -9,6 +9,9 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
+from bot.services.stream_download import stream_download_to_file
+from bot.services.user_facing_error import UserFacingError
+
 ALBUM_API_URL = "https://music.yandex.ru/handlers/album.jsx"
 ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 HTTP_TIMEOUT_SECONDS = 60
@@ -43,7 +46,7 @@ async def download_podcast_episode_from_yandex_music(
 ) -> tuple[str, str | None]:
     match = YANDEX_MUSIC_EPISODE_URL_RE.match(url)
     if not match:
-        raise RuntimeError("yandex-music: некорректная ссылка на выпуск")
+        raise UserFacingError("yandex-music", "некорректная ссылка на выпуск")
 
     album_id = match.group("album_id")
     track_id = match.group("track_id")
@@ -58,7 +61,7 @@ async def download_podcast_episode_from_yandex_music(
 
         track = _find_track(album, track_id)
         if not track:
-            raise RuntimeError("yandex-music: выпуск не найден в подкасте")
+            raise UserFacingError("yandex-music", "выпуск не найден в подкасте")
         if track.get("type") != "podcast-episode":
             raise YandexMusicNotPodcastError(
                 "yandex-music: ссылка ведёт не на выпуск подкаста"
@@ -100,12 +103,13 @@ async def _fetch_album(
     url = f"{ALBUM_API_URL}?{urlencode({'album': album_id})}"
     async with session.get(url, headers=headers) as resp:
         if resp.status != 200:
-            raise RuntimeError(
-                f"yandex-music: API подкаста вернул HTTP {resp.status}"
+            raise UserFacingError(
+                "yandex-music",
+                f"API подкаста вернул HTTP {resp.status}",
             )
         data = await resp.json(content_type=None)
     if data.get("type") == "captcha" or "captcha" in data:
-        raise RuntimeError("yandex-music: Яндекс Музыка запросила капчу")
+        raise UserFacingError("yandex-music", "Яндекс Музыка запросила капчу")
     return data
 
 
@@ -122,7 +126,7 @@ async def _find_podcast_feed(
     podcast_title: str | None,
 ) -> str:
     if not podcast_title:
-        raise RuntimeError("yandex-music: API не вернул название подкаста")
+        raise UserFacingError("yandex-music", "API не вернул название подкаста")
 
     query = urlencode({
         "term": podcast_title,
@@ -133,8 +137,9 @@ async def _find_podcast_feed(
     })
     async with session.get(f"{ITUNES_SEARCH_URL}?{query}") as resp:
         if resp.status != 200:
-            raise RuntimeError(
-                f"yandex-music: поиск RSS подкаста вернул HTTP {resp.status}"
+            raise UserFacingError(
+                "yandex-music",
+                f"поиск RSS подкаста вернул HTTP {resp.status}",
             )
         data = await resp.json(content_type=None)
 
@@ -145,7 +150,7 @@ async def _find_podcast_feed(
             return item["feedUrl"]
     if len(results) == 1:
         return results[0]["feedUrl"]
-    raise RuntimeError("yandex-music: не удалось найти открытый RSS подкаста")
+    raise UserFacingError("yandex-music", "не удалось найти открытый RSS подкаста")
 
 
 async def _find_episode_enclosure(
@@ -154,19 +159,20 @@ async def _find_episode_enclosure(
     episode_title: str | None,
 ) -> str:
     if not episode_title:
-        raise RuntimeError("yandex-music: API не вернул название выпуска")
+        raise UserFacingError("yandex-music", "API не вернул название выпуска")
 
     async with session.get(feed_url) as resp:
         if resp.status != 200:
-            raise RuntimeError(
-                f"yandex-music: RSS подкаста вернул HTTP {resp.status}"
+            raise UserFacingError(
+                "yandex-music",
+                f"RSS подкаста вернул HTTP {resp.status}",
             )
         body = await resp.read()
 
     try:
         root = ET.fromstring(body)
     except ET.ParseError as e:
-        raise RuntimeError("yandex-music: RSS подкаста не разобрался") from e
+        raise UserFacingError("yandex-music", "RSS подкаста не разобрался") from e
 
     normalized_title = _normalize_title(episode_title)
     for item in root.iter():
@@ -179,7 +185,7 @@ async def _find_episode_enclosure(
         if enclosure is not None and enclosure.get("url"):
             return enclosure.get("url")
 
-    raise RuntimeError("yandex-music: выпуск не найден в RSS подкаста")
+    raise UserFacingError("yandex-music", "выпуск не найден в RSS подкаста")
 
 
 async def _download_to_file(
@@ -189,16 +195,20 @@ async def _download_to_file(
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}{_pick_extension(href)}")
-
-    async with session.get(href) as resp:
-        if resp.status != 200:
-            raise RuntimeError(
-                f"yandex-music: скачивание выпуска вернуло HTTP {resp.status}"
-            )
-        with open(out_path, "wb") as f:
-            async for chunk in resp.content.iter_chunked(DOWNLOAD_CHUNK_BYTES):
-                f.write(chunk)
-
+    await stream_download_to_file(
+        session,
+        href,
+        out_path,
+        chunk_size=DOWNLOAD_CHUNK_BYTES,
+        http_error=lambda status: UserFacingError(
+            "yandex-music",
+            f"скачивание выпуска вернуло HTTP {status}",
+        ),
+        network_error=lambda: UserFacingError(
+            "yandex-music",
+            "не удалось скачать выпуск",
+        ),
+    )
     return out_path
 
 

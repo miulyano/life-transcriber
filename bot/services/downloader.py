@@ -10,6 +10,7 @@ from bot.config import settings
 from bot.services.facebook import download_from_facebook, is_facebook_url
 from bot.services.instagram import download_from_instagram, is_instagram_url
 from bot.services.media import prepare_audio_for_transcription
+from bot.services.user_facing_error import UserFacingError
 from bot.services.yandex_disk import download_from_yandex_disk, is_yandex_disk_url
 from bot.services.yandex_music import (
     YandexMusicNotPodcastError,
@@ -53,8 +54,9 @@ async def download_audio(url: str, output_dir: str) -> tuple[str, Optional[str]]
 
     if is_yandex_music_url(url):
         if not is_yandex_music_episode_url(url):
-            raise RuntimeError(
-                "yandex-music: пришлите ссылку на конкретный выпуск подкаста, "
+            raise UserFacingError(
+                "yandex-music",
+                "пришлите ссылку на конкретный выпуск подкаста, "
                 "а не на весь подкаст"
             )
         try:
@@ -72,12 +74,14 @@ async def download_audio(url: str, output_dir: str) -> tuple[str, Optional[str]]
             )
         except RuntimeError as e:
             if "HTTP Error 451" in str(e) or "Unavailable For Legal Reasons" in str(e):
-                raise RuntimeError(
-                    "yandex-music: Яндекс Музыка недоступна из региона сервера. "
+                raise UserFacingError(
+                    "yandex-music",
+                    "Яндекс Музыка недоступна из региона сервера. "
                     "Нужен прокси или сервер в регионе, где она открывается"
                 ) from e
-            raise RuntimeError(
-                "yandex-music: не удалось скачать выпуск. Возможно, ссылка "
+            raise UserFacingError(
+                "yandex-music",
+                "не удалось скачать выпуск. Возможно, ссылка "
                 "недоступна или Яндекс Музыка запросила проверку"
             ) from e
 

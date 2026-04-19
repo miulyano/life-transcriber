@@ -1,12 +1,19 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from bot.services import summarizer
 
 
-def _response(content: str):
+def _response(content: str, finish_reason: str = "stop"):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content),
+                finish_reason=finish_reason,
+            )
+        ]
     )
 
 
@@ -90,5 +97,121 @@ async def test_cleanup_transcript_long_text_processes_chunks_in_order(monkeypatc
     assert calls[0].kwargs["messages"][0]["content"] == summarizer.CLEANUP_SYSTEM_PROMPT
     assert calls[0].kwargs["messages"][1]["content"] == "chunk one"
     assert calls[1].kwargs["messages"][1]["content"] == "chunk two"
+
+
+# ---------- progress reporting ----------
+
+
+async def test_summarize_short_text_reports_progress(monkeypatch):
+    create = AsyncMock(return_value=_response("short summary"))
+    monkeypatch.setattr(summarizer.client.chat.completions, "create", create)
+
+    reports: list[tuple[int, int]] = []
+
+    async def on_progress(done: int, total: int) -> None:
+        reports.append((done, total))
+
+    await summarizer.summarize("source", on_progress=on_progress)
+    assert reports == [(0, 1), (1, 1)]
+
+
+async def test_summarize_long_text_reports_progress(monkeypatch):
+    monkeypatch.setattr(
+        summarizer, "_split_long_text", lambda text: ["a", "b", "c"]
+    )
+    create = AsyncMock(
+        side_effect=[
+            _response("note a"),
+            _response("note b"),
+            _response("note c"),
+            _response("final"),
+        ]
+    )
+    monkeypatch.setattr(summarizer.client.chat.completions, "create", create)
+
+    reports: list[tuple[int, int]] = []
+
+    async def on_progress(done: int, total: int) -> None:
+        reports.append((done, total))
+
+    await summarizer.summarize("long source", on_progress=on_progress)
+    # total = 3 chunks + 1 final step = 4
+    assert reports[0] == (0, 4)
+    assert reports[-1] == (4, 4)
+    # Each chunk completion gets reported.
+    assert (1, 4) in reports
+    assert (2, 4) in reports
+    assert (3, 4) in reports
+
+
+async def test_cleanup_transcript_reports_progress(monkeypatch):
+    monkeypatch.setattr(
+        summarizer, "_split_cleanup_text", lambda text: ["x", "y", "z"]
+    )
+    create = AsyncMock(
+        side_effect=[_response("X"), _response("Y"), _response("Z")]
+    )
+    monkeypatch.setattr(summarizer.client.chat.completions, "create", create)
+
+    reports: list[tuple[int, int]] = []
+
+    async def on_progress(done: int, total: int) -> None:
+        reports.append((done, total))
+
+    await summarizer.cleanup_transcript("long source", on_progress=on_progress)
+    assert reports == [(0, 3), (1, 3), (2, 3), (3, 3)]
+
+
+# ---------- finish_reason retry on cleanup truncation ----------
+
+
+async def test_cleanup_transcript_retries_on_truncation_then_succeeds(monkeypatch):
+    monkeypatch.setattr(summarizer, "_split_cleanup_text", lambda text: ["chunk"])
+    create = AsyncMock(
+        side_effect=[
+            _response("partial output", finish_reason="length"),
+            _response("full output"),
+        ]
+    )
+    monkeypatch.setattr(summarizer.client.chat.completions, "create", create)
+
+    result = await summarizer.cleanup_transcript("source")
+    assert result == "full output"
+    assert create.await_count == 2
+
+
+async def test_cleanup_transcript_raises_when_retry_also_truncates(monkeypatch):
+    monkeypatch.setattr(summarizer, "_split_cleanup_text", lambda text: ["chunk"])
+    create = AsyncMock(
+        side_effect=[
+            _response("partial 1", finish_reason="length"),
+            _response("partial 2", finish_reason="length"),
+        ]
+    )
+    monkeypatch.setattr(summarizer.client.chat.completions, "create", create)
+
+    with pytest.raises(RuntimeError):
+        await summarizer.cleanup_transcript("source")
+
+
+# ---------- _split_cleanup_text uses sentence boundaries ----------
+
+
+def test_split_cleanup_text_uses_sentence_boundaries_for_huge_paragraph():
+    """Wall-of-text paragraphs (typical raw Whisper output) must split on
+    sentence boundaries, not in the middle of a word."""
+    sentence = (
+        "Это длинное русское предложение для проверки разбиения по границам "
+        "предложений вместо разбиения по словам или произвольным символам. "
+    )
+    huge_paragraph = sentence * 200  # one giant paragraph, no \n\n
+    chunks = summarizer._split_cleanup_text(
+        huge_paragraph, max_chars=summarizer.CLEANUP_CHUNK_MAX_CHARS
+    )
+    assert len(chunks) >= 2
+    # Every chunk should end at a sentence boundary (one of SENTENCE_BOUNDARIES
+    # endings) or be the very last chunk.
+    for chunk in chunks[:-1]:
+        assert chunk.rstrip().endswith((".", "!", "?", "…"))
 
 

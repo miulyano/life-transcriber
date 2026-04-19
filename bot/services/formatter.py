@@ -42,7 +42,7 @@ SYSTEM_PROMPT = """\
 - Первая строка — сам текст заголовка без каких-либо префиксов (не «Заголовок: …», не «Title: …», просто текст заголовка).
 - После заголовка — одна пустая строка.
 - Абзацы разделяй одной пустой строкой.
-- Если есть спикеры — каждая реплика начинается с `<Имя или Спикер N>: ` на той же строке, что и текст реплики.
+- Если есть спикеры — каждая реплика начинается с метки спикера и двоеточия на той же строке, что и текст реплики. Примеры правильного оформления: `Иван: привет, рад тебя видеть.`, `Спикер 1: давайте начнём.`, `Спикер 2: согласен.`. Метку НЕ оборачивай в угловые `<…>` или квадратные `[…]` скобки и не выделяй никак иначе. Используй только русское слово «Спикер» (а не `Speaker`).
 
 Если подсказка по источнику приходит как `Source: ...` — используй её как контекст для заголовка, но не копируй её как есть, если она нечитаемая (хэш, uuid и т.п.). Подсказка также может указывать на то, что это подкаст или интервью — тогда особенно внимательно ищи смену говорящих.
 """
@@ -63,7 +63,7 @@ CHUNK_SYSTEM_PROMPT = """\
 - Только чистый plain text. Никакого Markdown, никаких HTML-тегов.
 - Не добавляй заголовок. Не добавляй служебных комментариев типа «Фрагмент 1:», «Продолжение:» и т.п.
 - Абзацы разделяй одной пустой строкой.
-- Если есть спикеры — каждая реплика на отдельной строке с префиксом `<Имя или Спикер N>: `.
+- Если есть спикеры — каждая реплика на отдельной строке с префиксом-меткой и двоеточием. Примеры правильного оформления: `Иван: привет.`, `Спикер 1: давайте начнём.`. Метку НЕ оборачивай в угловые `<…>` или квадратные `[…]` скобки. Используй только русское слово «Спикер» (а не `Speaker`).
 """
 
 # Used for chunks 2..N: carries forward the speaker labels established by the
@@ -71,18 +71,18 @@ CHUNK_SYSTEM_PROMPT = """\
 CONTINUATION_SYSTEM_PROMPT = """\
 Ты — помощник, который оформляет сырой фрагмент транскрибации аудио/видео в читаемый вид.
 
-Это ПРОДОЛЖЕНИЕ уже начатой транскрипции. Заголовок НЕ добавляй. Строго соблюдай уже использованные метки спикеров (если они переданы в блоке `Метки спикеров:` в user-message) — один и тот же голос должен иметь одну и ту же метку от фрагмента к фрагменту.
+Это ПРОДОЛЖЕНИЕ уже начатой транскрипции. Заголовок НЕ добавляй. Строго соблюдай уже использованные метки спикеров (они переданы в блоке `Метки спикеров из предыдущих фрагментов:` в user-message вместе с образцами их последних реплик) — один и тот же голос должен иметь одну и ту же метку от фрагмента к фрагменту.
 
 Задачи:
 1. Разбей текст фрагмента на смысловые абзацы.
-2. Если передан список меток спикеров — используй ТОЛЬКО их для тех же голосов. Если появляется действительно новый голос, которого не было раньше, — добавь его как следующий номер «Спикер N+1».
+2. Используй ТОЛЬКО переданные метки для тех же голосов. Если в блоке указано, кто говорил последним в предыдущем фрагменте, и текущий фрагмент начинается с реплики без явной смены говорящего, — присвой её именно ему (его реплика могла оборваться на стыке фрагментов). Если появляется действительно новый голос, которого не было раньше, — добавь его как следующий номер «Спикер N+1».
 3. Сохрани исходный язык и смысл. Не придумывай, не сокращай.
 
 Строгие правила форматирования:
 - Только чистый plain text. Никакого Markdown, никаких HTML-тегов.
 - Не добавляй заголовок. Не добавляй служебных комментариев.
 - Абзацы разделяй одной пустой строкой.
-- Если есть спикеры — каждая реплика на отдельной строке с префиксом `<Имя или Спикер N>: `.
+- Если есть спикеры — каждая реплика на отдельной строке с префиксом-меткой и двоеточием. Примеры правильного оформления: `Иван: привет.`, `Спикер 1: давайте начнём.`. Метку НЕ оборачивай в угловые `<…>` или квадратные `[…]` скобки. Используй только русское слово «Спикер» (а не `Speaker`).
 """
 
 TITLE_SYSTEM_PROMPT = """\
@@ -99,6 +99,69 @@ TITLE_SYSTEM_PROMPT = """\
 # capped at 40 chars to avoid accidentally matching a sentence that happens to
 # contain a colon.
 _SPEAKER_LABEL_RE = re.compile(r"(?m)^([^\n:]{1,40}?):\s", re.UNICODE)
+
+# Bracketed speaker labels we want to unwrap if the model emits them despite
+# the prompt: ``<Спикер 1>:`` / ``[Иван]:``.
+_BRACKETED_LABEL_RE = re.compile(
+    r"(?m)^[<\[]([^\n>\]]{1,40}?)[>\]](:\s)", re.UNICODE
+)
+
+# English ``Speaker N`` and lowercase ``спикер N`` variants that the model
+# sometimes mixes in. We normalize all of them to canonical ``Спикер N``.
+_SPEAKER_NUMBERED_RE = re.compile(
+    r"(?im)^(?:speaker|спикер)\s+(\d+)(:\s)", re.UNICODE
+)
+
+
+def _strip_speaker_brackets(text: str) -> str:
+    """Unwrap ``<Label>:``/``[Label]:`` at the start of a line into ``Label:``."""
+    return _BRACKETED_LABEL_RE.sub(r"\1\2", text)
+
+
+def _normalize_speaker_labels(text: str) -> str:
+    """Canonicalize ``Speaker N``/``спикер N`` to ``Спикер N`` at line starts."""
+    return _SPEAKER_NUMBERED_RE.sub(r"Спикер \1\2", text)
+
+
+def _postprocess_speakers(text: str) -> str:
+    return _normalize_speaker_labels(_strip_speaker_brackets(text))
+
+
+def _collect_speaker_samples(
+    formatted_text: str,
+    *,
+    max_per_speaker_chars: int = 200,
+) -> tuple[list[tuple[str, str]], Optional[str]]:
+    """Return ``[(label, last_reply_excerpt), ...]`` + label of last speaker.
+
+    Samples are ordered by first appearance of each label (so the original
+    speaker numbering stays meaningful). The "last" label is the speaker whose
+    reply ends the formatted text — useful so the next continuation chunk knows
+    whose reply may be continuing across the boundary.
+    """
+    matches = list(_SPEAKER_LABEL_RE.finditer(formatted_text))
+    if not matches:
+        return [], None
+
+    order: list[str] = []
+    samples: dict[str, str] = {}
+    last_label: Optional[str] = None
+
+    for i, match in enumerate(matches):
+        label = match.group(1).strip()
+        if not label or label.lower() in {"http", "https", "ftp"}:
+            continue
+        reply_start = match.end()
+        reply_end = matches[i + 1].start() if i + 1 < len(matches) else len(formatted_text)
+        excerpt = formatted_text[reply_start:reply_end].strip()
+        if len(excerpt) > max_per_speaker_chars:
+            excerpt = excerpt[:max_per_speaker_chars].rstrip() + "…"
+        if label not in samples:
+            order.append(label)
+        samples[label] = excerpt
+        last_label = label
+
+    return [(label, samples[label]) for label in order], last_label
 
 
 def _build_user_message(raw_text: str, filename_hint: Optional[str]) -> str:
@@ -118,17 +181,29 @@ def _build_chunk_user_message(chunk_text: str, filename_hint: Optional[str]) -> 
 def _build_continuation_user_message(
     chunk_text: str,
     filename_hint: Optional[str],
-    speaker_labels: list[str],
+    speaker_samples: list[tuple[str, str]],
+    last_speaker: Optional[str],
 ) -> str:
     parts = []
     if filename_hint:
         parts.append(f"Source: {filename_hint}")
-    if speaker_labels:
-        labels = ", ".join(speaker_labels)
-        parts.append(
-            "Метки спикеров из предыдущих фрагментов: "
-            f"{labels}. Используй те же метки для тех же голосов."
+    if speaker_samples:
+        sample_lines = [
+            f'- {label}: «{excerpt}»' for label, excerpt in speaker_samples
+        ]
+        block = (
+            "Метки спикеров из предыдущих фрагментов и образцы их последних реплик "
+            "(используй те же метки для тех же голосов):\n"
+            + "\n".join(sample_lines)
         )
+        if last_speaker:
+            block += (
+                f"\n\nПоследним в предыдущем фрагменте говорил: {last_speaker}. "
+                "Если текущий фрагмент начинается с реплики без явной смены "
+                "говорящего — присвой её именно ему (его реплика могла оборваться "
+                "на стыке)."
+            )
+        parts.append(block)
     parts.append(f"Фрагмент транскрибации (продолжение):\n{chunk_text}")
     return "\n\n".join(parts)
 
@@ -209,7 +284,7 @@ async def _call_openai_single(raw_text: str, filename_hint: Optional[str]) -> st
             f"format_transcript: single-call truncated (finish_reason={finish!r}, "
             f"input_chars={len(raw_text)})"
         )
-    return content
+    return _postprocess_speakers(content)
 
 
 async def _generate_title(raw_text: str, filename_hint: Optional[str]) -> str:
@@ -250,7 +325,7 @@ async def _format_chunk(
                     f"chunk truncated (finish_reason={finish!r}, "
                     f"chunk_chars={len(chunk_text)})"
                 )
-            return content
+            return _postprocess_speakers(content)
         except Exception as e:  # noqa: BLE001 — we retry any transient failure
             last_error = e
             logger.warning(
@@ -294,16 +369,19 @@ async def _format_chunked(
         user_message=_build_chunk_user_message(chunks[0], filename_hint),
     )
     formatted_parts.append(first_formatted)
-    speaker_labels = _extract_speaker_labels(first_formatted)
     await report(2)
 
-    # Subsequent chunks — carry forward speaker labels.
+    # Subsequent chunks — carry forward speaker labels with sample replies so
+    # the model keeps consistent labels even when the previous chunk's tail is
+    # a long monologue from one speaker.
     for i, chunk in enumerate(chunks[1:], start=2):
+        accumulated = "\n\n".join(formatted_parts)
+        samples, last_speaker = _collect_speaker_samples(accumulated)
         part = await _format_chunk(
             chunk,
             system_prompt=CONTINUATION_SYSTEM_PROMPT,
             user_message=_build_continuation_user_message(
-                chunk, filename_hint, speaker_labels
+                chunk, filename_hint, samples, last_speaker
             ),
         )
         formatted_parts.append(part)

@@ -155,9 +155,10 @@ async def test_long_input_speaker_labels_passed_to_continuation(monkeypatch):
     # both labels extracted from the first formatted chunk.
     for call in create.await_args_list[2:]:
         user_msg = call.kwargs["messages"][1]["content"]
-        assert "Метки спикеров из предыдущих фрагментов:" in user_msg
+        assert "Метки спикеров из предыдущих фрагментов" in user_msg
         assert "Иван" in user_msg
         assert "Мария" in user_msg
+        assert "Последним в предыдущем фрагменте говорил" in user_msg
 
 
 async def test_long_input_chunk_retry_then_success(monkeypatch):
@@ -255,3 +256,129 @@ async def test_long_input_title_truncation_ok(monkeypatch):
 )
 def test_extract_speaker_labels(text, expected):
     assert formatter._extract_speaker_labels(text) == expected
+
+
+# ---------- speaker post-processing ----------
+
+
+def test_strip_speaker_brackets_unwraps_angle():
+    text = "<Спикер 1>: привет.\n<Спикер 2>: здравствуй."
+    assert formatter._strip_speaker_brackets(text) == (
+        "Спикер 1: привет.\nСпикер 2: здравствуй."
+    )
+
+
+def test_strip_speaker_brackets_unwraps_square():
+    text = "[Иван]: привет."
+    assert formatter._strip_speaker_brackets(text) == "Иван: привет."
+
+
+def test_strip_speaker_brackets_leaves_inline_angle_intact():
+    # ``<`` inside the body (not at line start as a label wrapper) must stay.
+    text = "Иван: a < b.\nМария: ok."
+    assert formatter._strip_speaker_brackets(text) == text
+
+
+def test_normalize_speaker_labels_canonicalizes_variants():
+    text = "Speaker 1: a\nспикер 2: b\nСпикер 3: c\nspeaker 4: d"
+    assert formatter._normalize_speaker_labels(text) == (
+        "Спикер 1: a\nСпикер 2: b\nСпикер 3: c\nСпикер 4: d"
+    )
+
+
+def test_normalize_speaker_labels_does_not_touch_named_speakers():
+    text = "Иван: привет.\nМария: пока."
+    assert formatter._normalize_speaker_labels(text) == text
+
+
+def test_postprocess_combines_strip_and_normalize():
+    text = "<Speaker 1>: привет.\n<спикер 2>: пока."
+    assert formatter._postprocess_speakers(text) == (
+        "Спикер 1: привет.\nСпикер 2: пока."
+    )
+
+
+# ---------- speaker samples ----------
+
+
+def test_collect_speaker_samples_alternating_speakers():
+    text = (
+        "Иван: первая реплика Ивана.\n"
+        "Мария: первая реплика Марии.\n"
+        "Иван: вторая реплика Ивана."
+    )
+    samples, last = formatter._collect_speaker_samples(text)
+    labels = [label for label, _ in samples]
+    assert labels == ["Иван", "Мария"]
+    # Иван's sample is his LAST reply, not his first.
+    ivan_sample = dict(samples)["Иван"]
+    assert "вторая реплика Ивана" in ivan_sample
+    assert last == "Иван"
+
+
+def test_collect_speaker_samples_long_monologue_in_tail_keeps_all_speakers():
+    text = (
+        "Иван: короткая реплика.\n"
+        "Мария: ещё одна короткая.\n"
+        "Иван: " + ("длинный монолог " * 200)
+    )
+    samples, last = formatter._collect_speaker_samples(text)
+    labels = [label for label, _ in samples]
+    # Even though Ivan dominates the tail, Maria must still be in samples.
+    assert labels == ["Иван", "Мария"]
+    assert last == "Иван"
+
+
+def test_collect_speaker_samples_no_labels():
+    samples, last = formatter._collect_speaker_samples("plain monologue without labels.")
+    assert samples == []
+    assert last is None
+
+
+def test_collect_speaker_samples_truncates_long_excerpt():
+    long_reply = "x " * 500
+    text = f"Иван: {long_reply}"
+    samples, _ = formatter._collect_speaker_samples(
+        text, max_per_speaker_chars=50
+    )
+    excerpt = samples[0][1]
+    assert excerpt.endswith("…")
+    assert len(excerpt) <= 51  # 50 chars + ellipsis
+
+
+# ---------- post-process integration in single-call and chunked paths ----------
+
+
+async def test_single_call_strips_brackets_in_output(monkeypatch):
+    create = AsyncMock(
+        return_value=_response("Заголовок\n\n<Спикер 1>: привет.\n<Спикер 2>: пока.")
+    )
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    result = await formatter.format_transcript("short text")
+
+    assert "<Спикер" not in result
+    assert "Спикер 1: привет." in result
+    assert "Спикер 2: пока." in result
+
+
+async def test_chunked_path_strips_brackets_and_normalizes(monkeypatch):
+    raw = _long_raw(20_000)
+    create = AsyncMock(
+        side_effect=[
+            _response("Title"),
+            _response("<Speaker 1>: первая.\n<Speaker 2>: вторая."),
+            _response("<спикер 1>: третья."),
+            _response("<Speaker 2>: четвёртая."),
+            _response("<Speaker 1>: пятая."),
+        ]
+    )
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    result = await formatter.format_transcript(raw)
+
+    assert "<Speaker" not in result
+    assert "<спикер" not in result
+    assert "Speaker " not in result  # English variant must be normalized too
+    assert "Спикер 1:" in result
+    assert "Спикер 2:" in result

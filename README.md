@@ -1,5 +1,9 @@
 # life-transcriber
 
+<p align="center">
+  <img src="assets/f92a46a0-a012-4056-ab59-ff59a3f55ece.png" alt="life-transcriber banner" width="100%">
+</p>
+
 Персональный Telegram-бот для транскрибации аудио и видео через AssemblyAI
 Universal-2 (с акустической диаризацией спикеров), с генерацией краткого
 конспекта на GPT-4o.

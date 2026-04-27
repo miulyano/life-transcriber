@@ -5,4 +5,5 @@ import os
 # won't leak into tests.
 os.environ["BOT_TOKEN"] = "test_token"
 os.environ["OPENAI_API_KEY"] = "test_key"
+os.environ["ASSEMBLYAI_API_KEY"] = "test_aai_key"
 os.environ["ALLOWED_USER_IDS"] = "111,222"

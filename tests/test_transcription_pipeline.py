@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import bot.services.transcription_pipeline as pipeline_module
+from bot.services.transcriber import FormattedTranscript
 
 
 class _Reporter:
@@ -19,36 +20,28 @@ class _Reporter:
         self.events.append(("fraction", fraction))
 
 
+def _result(body="formatted body", title="T", raw="raw"):
+    return FormattedTranscript(
+        title=title, body=body, raw_text=raw, language="ru", speaker_count=2
+    )
+
+
 @pytest.mark.asyncio
-async def test_run_transcription_pipeline_orders_transcribe_format_and_deliver(monkeypatch):
+async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
     reporter = _Reporter()
     events = []
 
-    async def fake_transcribe(path: str, on_progress=None, on_progress_fraction=None) -> str:
-        events.append(("transcribe", path))
-        await on_progress(1, 3)
-        await on_progress_fraction(0.5)
-        return "raw text"
+    async def fake_transcribe(path, *, filename_hint=None, on_progress=None, on_progress_fraction=None):
+        events.append(("transcribe", path, filename_hint))
+        return _result(body="T\n\nСпикер 1: hi")
 
-    async def fake_format(
-        text: str,
-        filename_hint=None,
-        on_progress=None,
-        on_progress_fraction=None,
-    ) -> str:
-        events.append(("format", text, filename_hint))
-        await on_progress(2, 3)
-        await on_progress_fraction(1.0)
-        return "formatted text"
-
-    async def fake_deliver(text: str) -> None:
+    async def fake_deliver(text):
         events.append(("deliver", text))
 
-    async def fake_phase_change(label: str) -> None:
+    async def fake_phase_change(label):
         events.append(("phase-change", label))
 
     monkeypatch.setattr(pipeline_module, "transcribe", fake_transcribe)
-    monkeypatch.setattr(pipeline_module, "format_transcript", fake_format)
 
     await pipeline_module.run_transcription_pipeline(
         "/tmp/audio.mp3",
@@ -59,29 +52,21 @@ async def test_run_transcription_pipeline_orders_transcribe_format_and_deliver(m
     )
 
     assert events == [
-        ("transcribe", "/tmp/audio.mp3"),
-        ("phase-change", "Форматирую…"),
-        ("format", "raw text", "title hint"),
+        ("transcribe", "/tmp/audio.mp3", "title hint"),
         ("phase-change", "Отправляю результат…"),
-        ("deliver", "formatted text"),
+        ("deliver", "T\n\nСпикер 1: hi"),
     ]
     assert reporter.events == [
-        ("progress", 1, 3),
-        ("fraction", 0.5),
-        ("phase", "Форматирую…"),
-        ("progress", 2, 3),
-        ("fraction", 1.0),
         ("phase", "Отправляю результат…"),
     ]
 
 
 @pytest.mark.asyncio
-async def test_run_transcription_pipeline_passes_none_filename_hint(monkeypatch):
+async def test_pipeline_passes_none_filename_hint(monkeypatch):
     reporter = _Reporter()
-    format_mock = AsyncMock(return_value="formatted")
+    transcribe_mock = AsyncMock(return_value=_result())
 
-    monkeypatch.setattr(pipeline_module, "transcribe", AsyncMock(return_value="raw"))
-    monkeypatch.setattr(pipeline_module, "format_transcript", format_mock)
+    monkeypatch.setattr(pipeline_module, "transcribe", transcribe_mock)
 
     await pipeline_module.run_transcription_pipeline(
         "/tmp/audio.mp3",
@@ -89,4 +74,4 @@ async def test_run_transcription_pipeline_passes_none_filename_hint(monkeypatch)
         deliver_text=AsyncMock(),
     )
 
-    assert format_mock.await_args.kwargs["filename_hint"] is None
+    assert transcribe_mock.await_args.kwargs["filename_hint"] is None

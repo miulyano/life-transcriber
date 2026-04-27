@@ -1,187 +1,159 @@
+"""Audio → transcript via AssemblyAI Universal model.
+
+Returns a :class:`FormattedTranscript` with:
+- ``body`` — final text ready to deliver (title + speaker-labelled paragraphs);
+- ``raw_text`` — the AssemblyAI text without speaker prefixes (used by
+  ``cleanup_transcript`` and ``summarize`` callbacks so they get full context).
+
+AssemblyAI handles diarization (real, acoustic), punctuation, casing and
+paragraph segmentation server-side, so we no longer chunk audio nor ask GPT
+to "guess" speakers from prose.
+"""
 import asyncio
-import os
-import time
+import logging
 from contextlib import suppress
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
-from openai import AsyncOpenAI
+import assemblyai as aai
 
 from bot.config import settings
-from bot.services.ffmpeg_runner import run_ffmpeg
-from bot.utils.fake_progress import FractionCallback
+from bot.services.formatter import generate_title, render_with_speakers
+from bot.services.word_boost import (
+    apply_custom_spelling,
+    load_custom_spelling,
+    load_word_boost,
+)
+from bot.utils.fake_progress import FractionCallback, run_with_fake_progress
 
-MAX_WHISPER_BYTES = 24 * 1024 * 1024  # 24 MB (Whisper limit is 25 MB)
-CHUNK_DURATION_SECONDS = 600  # 10 minutes per chunk
-
-# How many Whisper chunk requests run concurrently. 3 keeps us well under
-# OpenAI's default Whisper rate limits and avoids opening too many sockets /
-# holding too many file handles at once, while eliminating the wall-clock
-# penalty of strictly-sequential per-chunk awaits on long inputs.
-WHISPER_PARALLELISM = 3
-
-# Fake-progress rate estimate for non-chunked Whisper calls (no real progress signal).
-FAKE_RATE_BYTES_PER_SEC = 200_000
-FAKE_TICK_SECONDS = 0.5
-FAKE_CEILING = 0.95
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], Awaitable[None]]
 
-client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+@dataclass
+class Utterance:
+    speaker: str  # AssemblyAI label: "A", "B", "C", ...
+    text: str
+    start_ms: int
+    end_ms: int
+
+
+@dataclass
+class FormattedTranscript:
+    title: str
+    body: str  # title + blank line + speaker-labelled body
+    raw_text: str  # AssemblyAI text after custom_spelling, no speaker prefixes
+    language: Optional[str]
+    speaker_count: int
+
+
+# Loaded once at import — restart the bot to pick up edits to the data files.
+_WORD_BOOST = load_word_boost(settings.WORD_BOOST_FILE)
+_CUSTOM_SPELLING = load_custom_spelling(settings.CUSTOM_SPELLING_FILE)
+
+aai.settings.api_key = settings.ASSEMBLYAI_API_KEY
+
+
+def _build_config() -> aai.TranscriptionConfig:
+    cfg = aai.TranscriptionConfig(
+        speech_model=aai.SpeechModel(settings.ASSEMBLYAI_SPEECH_MODEL),
+        speaker_labels=True,
+        punctuate=True,
+        format_text=True,
+        disfluencies=False,
+    )
+    if settings.FORCE_LANGUAGE_CODE:
+        cfg.language_code = settings.FORCE_LANGUAGE_CODE
+    else:
+        cfg.language_detection = True
+    if _WORD_BOOST:
+        cfg.set_word_boost(_WORD_BOOST, boost=aai.WordBoost(settings.WORD_BOOST_LEVEL))
+    return cfg
+
+
+def _utterances_from_response(transcript: "aai.Transcript") -> list[Utterance]:
+    out: list[Utterance] = []
+    for u in transcript.utterances or []:
+        out.append(
+            Utterance(
+                speaker=str(u.speaker),
+                text=u.text or "",
+                start_ms=int(getattr(u, "start", 0) or 0),
+                end_ms=int(getattr(u, "end", 0) or 0),
+            )
+        )
+    return out
+
+
+async def _run_assemblyai(audio_path: str) -> "aai.Transcript":
+    """Submit audio to AssemblyAI and wait for completion (off the event loop)."""
+    config = _build_config()
+    transcriber = aai.Transcriber(config=config)
+
+    def _do() -> "aai.Transcript":
+        # Synchronous SDK call wraps upload + polling internally.
+        return transcriber.transcribe(audio_path)
+
+    transcript = await asyncio.to_thread(_do)
+    if transcript.status == aai.TranscriptStatus.error:
+        raise RuntimeError(f"AssemblyAI error: {transcript.error}")
+    return transcript
 
 
 async def transcribe(
     audio_path: str,
+    *,
+    filename_hint: Optional[str] = None,
     on_progress: Optional[ProgressCallback] = None,
     on_progress_fraction: Optional[FractionCallback] = None,
-) -> str:
-    file_size = os.path.getsize(audio_path)
-    if file_size > MAX_WHISPER_BYTES:
-        chunks = await _split_audio(audio_path)
-        parts = await _transcribe_chunks_parallel(chunks, on_progress)
-        return " ".join(parts)
+) -> FormattedTranscript:
+    """Transcribe audio and return a fully formatted transcript ready to deliver.
 
-    if on_progress_fraction is None:
-        return await _transcribe_file(audio_path)
-
-    expected_seconds = file_size / FAKE_RATE_BYTES_PER_SEC
-    return await _run_with_fake_progress(
-        _transcribe_file(audio_path),
-        on_progress_fraction,
-        expected_seconds,
-    )
-
-
-async def _fake_progress_loop(
-    done: asyncio.Event,
-    on_progress_fraction: FractionCallback,
-    expected_seconds: float,
-) -> None:
-    start = time.monotonic()
-    while not done.is_set():
-        elapsed = time.monotonic() - start
-        fraction = min(FAKE_CEILING, elapsed / expected_seconds)
-        with suppress(Exception):
-            await on_progress_fraction(fraction)
-        try:
-            await asyncio.wait_for(done.wait(), timeout=FAKE_TICK_SECONDS)
-        except asyncio.TimeoutError:
-            pass
-
-
-async def _run_with_fake_progress(
-    coro: Awaitable,
-    on_progress_fraction: FractionCallback,
-    expected_seconds: float,
-):
-    expected_seconds = max(3.0, expected_seconds)
-    done = asyncio.Event()
-    task = asyncio.create_task(
-        _fake_progress_loop(done, on_progress_fraction, expected_seconds)
-    )
-    try:
-        result = await coro
-    finally:
-        done.set()
-        with suppress(Exception):
-            await task
-    with suppress(Exception):
-        await on_progress_fraction(1.0)
-    return result
-
-
-async def _transcribe_chunks_parallel(
-    chunks: list[str], on_progress: Optional[ProgressCallback]
-) -> list[str]:
-    """Transcribe chunks concurrently (bounded by ``WHISPER_PARALLELISM``).
-
-    Chunk files are unlinked as soon as their transcription finishes (or
-    fails), so a crash in one task does not leave the others' temp files
-    behind. ``on_progress`` is invoked by completion order, not chunk index;
-    the final ``(total, total)`` report is still guaranteed because every
-    task either completes or cancels before this function returns.
-
-    If any chunk fails, the remaining in-flight tasks are cancelled and we
-    wait for them to run their cleanup (``finally: os.unlink``) before
-    re-raising — otherwise Python's default ``asyncio.gather`` would leave
-    siblings orphaned and their chunk files would leak.
+    A fake-progress bar is shown if ``on_progress_fraction`` is provided —
+    AssemblyAI doesn't expose real progress, so we fake it as before.
     """
-    total = len(chunks)
-    if on_progress is not None:
-        await on_progress(0, total)
-
-    semaphore = asyncio.Semaphore(WHISPER_PARALLELISM)
-    done_count = 0
-    lock = asyncio.Lock()
-
-    async def run(chunk: str) -> str:
-        nonlocal done_count
-        try:
-            async with semaphore:
-                text = await _transcribe_file(chunk)
-        finally:
-            with suppress(OSError):
-                os.unlink(chunk)
-        if on_progress is not None:
-            async with lock:
-                done_count += 1
-                current = done_count
-            await on_progress(current, total)
-        return text
-
-    tasks = [asyncio.create_task(run(c)) for c in chunks]
-    try:
-        return await asyncio.gather(*tasks)
-    except BaseException:
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        # Let every task finish its `finally` before we re-raise — otherwise
-        # cancelled tasks are still running in the background when the caller
-        # checks for leftover files.
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
-
-
-async def _transcribe_file(path: str) -> str:
-    with open(path, "rb") as f:
-        response = await client.audio.transcriptions.create(
-            model=settings.WHISPER_MODEL,
-            file=f,
-            response_format="text",
+    if on_progress_fraction is not None:
+        # Rough estimate: AssemblyAI Universal processes ~10× real-time,
+        # plus ~5s upload. Use a conservative 30s default — the loop caps
+        # at FAKE_CEILING anyway.
+        return await run_with_fake_progress(
+            _transcribe_inner(audio_path, filename_hint),
+            on_progress_fraction,
+            expected_seconds=30.0,
         )
-    return response.strip()
+    return await _transcribe_inner(audio_path, filename_hint)
 
 
-async def _split_audio(audio_path: str) -> list[str]:
-    base = Path(audio_path).stem
-    out_dir = Path(audio_path).parent
-    pattern = str(out_dir / f"{base}_chunk_%03d.mp3")
-    chunk_glob = f"{base}_chunk_*.mp3"
+async def _transcribe_inner(
+    audio_path: str, filename_hint: Optional[str]
+) -> FormattedTranscript:
+    transcript = await _run_assemblyai(audio_path)
+    raw_text = (transcript.text or "").strip()
+    raw_text = apply_custom_spelling(raw_text, _CUSTOM_SPELLING)
 
-    try:
-        await run_ffmpeg(
-            "-i",
-            audio_path,
-            "-f",
-            "segment",
-            "-segment_time",
-            str(CHUNK_DURATION_SECONDS),
-            "-ar",
-            "16000",
-            "-ac",
-            "1",
-            "-acodec",
-            "mp3",
-            pattern,
-        )
-    except RuntimeError:
-        for chunk in out_dir.glob(chunk_glob):
-            with suppress(OSError):
-                chunk.unlink()
-        raise
+    utterances = _utterances_from_response(transcript)
+    # Apply custom_spelling to each utterance too, otherwise the body and
+    # raw_text would diverge.
+    for u in utterances:
+        u.text = apply_custom_spelling(u.text, _CUSTOM_SPELLING)
 
-    chunks = sorted(out_dir.glob(chunk_glob))
-    if not chunks:
-        raise RuntimeError("ffmpeg did not produce audio chunks")
-    return [str(c) for c in chunks]
+    speaker_count = len({u.speaker for u in utterances}) if utterances else (1 if raw_text else 0)
+    body_text = render_with_speakers(utterances) if utterances else raw_text
+
+    title = ""
+    if raw_text:
+        with suppress(Exception):
+            title = await generate_title(raw_text, filename_hint)
+        if not title:
+            title = (filename_hint or "").strip()
+
+    body = f"{title}\n\n{body_text}".strip() if title else body_text
+    language = getattr(transcript, "language_code", None) or settings.FORCE_LANGUAGE_CODE
+    return FormattedTranscript(
+        title=title,
+        body=body,
+        raw_text=raw_text,
+        language=language,
+        speaker_count=speaker_count,
+    )

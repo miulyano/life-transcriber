@@ -5,14 +5,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     BOT_TOKEN: str
     OPENAI_API_KEY: str
+    ASSEMBLYAI_API_KEY: str
     ALLOWED_USER_IDS: str  # comma-separated list, parsed via property
     LONG_TEXT_THRESHOLD: int = 2000
     MIN_SUMMARY_LEN: int = 500
-    WHISPER_MODEL: str = "whisper-1"
+    ASSEMBLYAI_SPEECH_MODEL: str = "universal"  # universal | nano | slam-1
+    WORD_BOOST_FILE: str = "bot/data/word_boost.txt"
+    CUSTOM_SPELLING_FILE: str = "bot/data/custom_spelling.json"
+    WORD_BOOST_LEVEL: str = "high"  # low | default | high
+    # Autodetect by default. Set e.g. FORCE_LANGUAGE_CODE=ru to skip detection
+    # — useful if your audio is always one known language and you want max
+    # accuracy on short clips (autodetect is unreliable below ~30 sec).
+    FORCE_LANGUAGE_CODE: Optional[str] = None
     GPT_MODEL: str = "gpt-4o"
     TEMP_DIR: str = "/tmp/transcriber"
     COBALT_API_URL: str = "http://cobalt:9000"

@@ -5,6 +5,7 @@ from aiogram.types import BufferedInputFile
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
+from bot.constants import TELEGRAM_TEXT_LIMIT
 from bot.services.summarizer import cleanup_transcript, summarize
 from bot.utils.filename import build_filename, extract_title
 from bot.utils.markdown import markdown_to_telegram_html
@@ -12,13 +13,6 @@ from bot.utils.progress import ProgressReporter
 from bot.utils.text import _store_text, get_cached_text
 
 router = Router()
-
-# Telegram rejects text messages over 4096 chars with
-# "Bad Request: message is too long". We leave headroom for the
-# "📝 Краткий конспект:\n\n" prefix and for HTML tags that
-# ``markdown_to_telegram_html`` may inject (each `<b>...</b>` adds ≥7 chars,
-# and long summaries can accumulate dozens of them).
-TELEGRAM_TEXT_LIMIT = 3800
 
 
 async def _extract_text_from_message(callback: CallbackQuery) -> Optional[str]:

@@ -8,8 +8,8 @@ from aiogram.types import Message
 
 from bot.config import settings
 from bot.services.downloader import download_audio
+from bot.services.error_messages import format_download_error
 from bot.services.transcription_pipeline import run_transcription_pipeline
-from bot.services.user_facing_error import UserFacingError
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
 
@@ -17,35 +17,8 @@ router = Router()
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
-
-def _friendly_error(error: Exception | str) -> str:
-    if isinstance(error, UserFacingError):
-        error_msg = f"{error.provider}: {error.detail}"
-    else:
-        error_msg = str(error)
-    if error_msg.startswith("instagram:"):
-        detail = error_msg.split(":", 1)[1].strip()
-        if not detail:
-            return "Ошибка при обработке Instagram"
-        return detail[:1].upper() + detail[1:]
-    if error_msg.startswith("yandex-disk:"):
-        detail = error_msg.split(":", 1)[1].strip()
-        if not detail:
-            return "Ошибка Яндекс Диска"
-        return detail[:1].upper() + detail[1:]
-    if error_msg.startswith("yandex-music:"):
-        detail = error_msg.split(":", 1)[1].strip()
-        if not detail:
-            return "Ошибка Яндекс Музыки"
-        return detail[:1].upper() + detail[1:]
-    if error_msg.startswith("facebook:"):
-        detail = error_msg.split(":", 1)[1].strip()
-        if not detail:
-            return "Ошибка при обработке Facebook"
-        return detail[:1].upper() + detail[1:]
-    if "yt-dlp" in error_msg:
-        return "Не удалось скачать видео с этой платформы. Попробуй другую ссылку."
-    return f"Ошибка: {error_msg}"
+# Alias kept so existing tests that reference links._friendly_error continue to work.
+_friendly_error = format_download_error
 
 
 @router.message(F.text.regexp(URL_RE))

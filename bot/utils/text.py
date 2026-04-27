@@ -1,6 +1,6 @@
 import hashlib
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from aiogram.types import (
     BufferedInputFile,
@@ -71,18 +71,34 @@ def build_keyboard(text: str, text_hash: str, send_as_file: bool) -> Optional[In
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-async def reply_text_or_file(message: Message, text: str) -> None:
-    text_hash = _store_text(text)
+class _TranscriptPrep(NamedTuple):
+    send_as_file: bool
+    keyboard: Optional[InlineKeyboardMarkup]
+    title: str
+    filename: str
 
-    if len(text) <= settings.LONG_TEXT_THRESHOLD:
-        keyboard = build_keyboard(text, text_hash, send_as_file=False)
-        await message.reply(text, reply_markup=keyboard)
+
+def prepare_transcript(text: str) -> _TranscriptPrep:
+    """Compute all delivery parameters for a transcript without sending."""
+    h = _store_text(text)
+    send_as_file = len(text) > settings.LONG_TEXT_THRESHOLD
+    kb = build_keyboard(text, h, send_as_file=send_as_file)
+    title = extract_title(text)
+    return _TranscriptPrep(
+        send_as_file=send_as_file,
+        keyboard=kb,
+        title=title,
+        filename=build_filename(title),
+    )
+
+
+async def reply_text_or_file(message: Message, text: str) -> None:
+    d = prepare_transcript(text)
+    if not d.send_as_file:
+        await message.reply(text, reply_markup=d.keyboard)
     else:
-        keyboard = build_keyboard(text, text_hash, send_as_file=True)
-        file_bytes = text.encode("utf-8")
-        title = extract_title(text)
         await message.reply_document(
-            BufferedInputFile(file_bytes, filename=build_filename(title)),
-            caption=title or "Транскрибация готова.",
-            reply_markup=keyboard,
+            BufferedInputFile(text.encode("utf-8"), filename=d.filename),
+            caption=d.title or "Транскрибация готова.",
+            reply_markup=d.keyboard,
         )

@@ -1,18 +1,19 @@
 """Tests for bot.services.transcriber — AssemblyAI integration.
 
-We mock AssemblyAI's Transcriber.transcribe to a synthetic transcript with
-known utterances so we can verify config, label mapping, custom_spelling and
-title generation.
+We mock:
+- aai.Transcriber.submit → returns a fake transcript object with _impl.transcript_id
+- assemblyai.api.get_transcript → returns status progression (queued → completed)
+- analyze_transcript → returns ("Test Title", {})
 """
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import bot.services.transcriber as transcriber_module
 
 
-def _fake_transcript(utterances, *, text=None, language="ru", status="completed", error=None):
+def _fake_raw(utterances, *, text=None, language="ru", status="completed", error=None):
     return SimpleNamespace(
         utterances=utterances,
         text=text if text is not None else " ".join(u.text for u in utterances),
@@ -26,45 +27,87 @@ def _utt(speaker, text, start=0, end=0):
     return SimpleNamespace(speaker=speaker, text=text, start=start, end=end)
 
 
+def _make_status(status_str: str, utterances, *, text=None, language="ru", error=None):
+    """Build a fake status object matching what _aai_api.get_transcript returns."""
+    status_obj = getattr(transcriber_module.aai.TranscriptStatus, status_str)
+    return SimpleNamespace(
+        status=status_obj,
+        utterances=utterances,
+        text=text if text is not None else " ".join(u.text for u in utterances),
+        language_code=language,
+        error=error,
+    )
+
+
 @pytest.fixture(autouse=True)
-def _silence_title(monkeypatch):
-    async def _no_title(*args, **kwargs):
-        return "Test Title"
-    monkeypatch.setattr(transcriber_module, "generate_title", _no_title)
+def _silence_analyze(monkeypatch):
+    async def _no_analyze(*args, **kwargs):
+        return "Test Title", {}
+    monkeypatch.setattr(transcriber_module, "analyze_transcript", _no_analyze)
 
 
 @pytest.fixture
-def fake_transcribe(monkeypatch):
-    """Patch the SDK call. Returns a list to which the test appends a result."""
-    calls: list[dict] = []
+def fake_polling(monkeypatch):
+    """Patch submit + get_transcript for polling-based transcription.
+
+    Returns (submit_calls, status_sequence_holder).
+    status_sequence_holder["statuses"] = list of SimpleNamespace returned in order.
+    """
+    submit_calls: list[dict] = []
     holder: dict = {}
+
+    class FakeImpl:
+        transcript_id = "fake-id-123"
+
+    class FakeHttpClient:
+        pass
+
+    class FakeTranscriptObj:
+        _impl = FakeImpl()
+        _client = SimpleNamespace(http_client=FakeHttpClient())
 
     class FakeTranscriber:
         def __init__(self, config):
-            calls.append({"config": config})
+            submit_calls.append({"config": config})
 
-        def transcribe(self, audio_path):
-            calls[-1]["audio_path"] = audio_path
-            return holder["result"]
+        def submit(self, audio_path):
+            submit_calls[-1]["audio_path"] = audio_path
+            return FakeTranscriptObj()
 
     monkeypatch.setattr(transcriber_module.aai, "Transcriber", FakeTranscriber)
-    # Status enum surrogate
     monkeypatch.setattr(
         transcriber_module.aai,
         "TranscriptStatus",
-        SimpleNamespace(error="error", completed="completed"),
+        SimpleNamespace(
+            error="error",
+            completed="completed",
+            queued="queued",
+            processing="processing",
+        ),
     )
-    return calls, holder
+
+    call_count = [0]
+
+    def _get_transcript(http_client, transcript_id):
+        statuses = holder.get("statuses", [])
+        idx = min(call_count[0], len(statuses) - 1)
+        call_count[0] += 1
+        return statuses[idx]
+
+    monkeypatch.setattr(transcriber_module._aai_api, "get_transcript", _get_transcript)
+
+    return submit_calls, holder
 
 
 @pytest.mark.asyncio
-async def test_transcribe_two_speakers_renders_with_labels(tmp_path, fake_transcribe):
-    calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([
+async def test_transcribe_two_speakers_renders_with_labels(tmp_path, fake_polling):
+    submit_calls, holder = fake_polling
+    utterances = [
         _utt("A", "Привет."),
         _utt("B", "Здравствуй."),
         _utt("A", "Как дела?"),
-    ])
+    ]
+    holder["statuses"] = [_make_status("completed", utterances)]
 
     result = await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
@@ -78,12 +121,10 @@ async def test_transcribe_two_speakers_renders_with_labels(tmp_path, fake_transc
 
 
 @pytest.mark.asyncio
-async def test_transcribe_single_speaker_no_prefix(tmp_path, fake_transcribe):
-    _calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([
-        _utt("A", "Первый абзац."),
-        _utt("A", "Второй абзац."),
-    ])
+async def test_transcribe_single_speaker_no_prefix(tmp_path, fake_polling):
+    _submit_calls, holder = fake_polling
+    utterances = [_utt("A", "Первый абзац."), _utt("A", "Второй абзац.")]
+    holder["statuses"] = [_make_status("completed", utterances)]
 
     result = await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
@@ -94,16 +135,15 @@ async def test_transcribe_single_speaker_no_prefix(tmp_path, fake_transcribe):
 
 
 @pytest.mark.asyncio
-async def test_transcribe_passes_speaker_labels_and_word_boost(tmp_path, fake_transcribe, monkeypatch):
-    calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([_utt("A", "ok")])
+async def test_transcribe_passes_speaker_labels_and_word_boost(tmp_path, fake_polling, monkeypatch):
+    submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
 
-    # Inject deterministic word_boost so the assertion is meaningful.
     monkeypatch.setattr(transcriber_module, "_WORD_BOOST", ["aiogram", "yt-dlp"])
 
     await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
-    config = calls[0]["config"]
+    config = submit_calls[0]["config"]
     assert config.speaker_labels is True
     assert config.punctuate is True
     assert config.format_text is True
@@ -113,37 +153,36 @@ async def test_transcribe_passes_speaker_labels_and_word_boost(tmp_path, fake_tr
 
 
 @pytest.mark.asyncio
-async def test_transcribe_force_language_skips_autodetect(tmp_path, fake_transcribe, monkeypatch):
-    calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([_utt("A", "ok")])
+async def test_transcribe_force_language_skips_autodetect(tmp_path, fake_polling, monkeypatch):
+    submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
 
     monkeypatch.setattr(transcriber_module.settings, "FORCE_LANGUAGE_CODE", "ru")
 
     await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
-    config = calls[0]["config"]
+    config = submit_calls[0]["config"]
     assert config.language_code == "ru"
-    # language_detection should NOT be set when we pin the language.
     assert config.language_detection in (False, None)
 
 
 @pytest.mark.asyncio
-async def test_transcribe_autodetect_when_no_force(tmp_path, fake_transcribe, monkeypatch):
-    calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([_utt("A", "ok")])
+async def test_transcribe_autodetect_when_no_force(tmp_path, fake_polling, monkeypatch):
+    submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
 
     monkeypatch.setattr(transcriber_module.settings, "FORCE_LANGUAGE_CODE", None)
 
     await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
-    config = calls[0]["config"]
+    config = submit_calls[0]["config"]
     assert config.language_detection is True
 
 
 @pytest.mark.asyncio
-async def test_transcribe_applies_custom_spelling(tmp_path, fake_transcribe, monkeypatch):
-    _calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([_utt("A", "Это ассемблиай.")])
+async def test_transcribe_applies_custom_spelling(tmp_path, fake_polling, monkeypatch):
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "Это ассемблиай.")])]
     monkeypatch.setattr(
         transcriber_module, "_CUSTOM_SPELLING", {"ассемблиай": "AssemblyAI"}
     )
@@ -156,24 +195,22 @@ async def test_transcribe_applies_custom_spelling(tmp_path, fake_transcribe, mon
 
 
 @pytest.mark.asyncio
-async def test_transcribe_raises_on_assemblyai_error(tmp_path, fake_transcribe):
-    _calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript(
-        [], text="", status="error", error="audio too short"
-    )
+async def test_transcribe_raises_on_assemblyai_error(tmp_path, fake_polling):
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("error", [], text="", error="audio too short")]
 
     with pytest.raises(RuntimeError, match="AssemblyAI error: audio too short"):
         await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
 
 @pytest.mark.asyncio
-async def test_transcribe_title_falls_back_to_filename_on_error(tmp_path, fake_transcribe, monkeypatch):
-    _calls, holder = fake_transcribe
-    holder["result"] = _fake_transcript([_utt("A", "ok")])
+async def test_transcribe_title_falls_back_to_filename_on_error(tmp_path, fake_polling, monkeypatch):
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
 
     async def _boom(*a, **k):
         raise RuntimeError("title api down")
-    monkeypatch.setattr(transcriber_module, "generate_title", _boom)
+    monkeypatch.setattr(transcriber_module, "analyze_transcript", _boom)
 
     result = await transcriber_module.transcribe(
         str(tmp_path / "a.mp3"), filename_hint="meeting.mp3"
@@ -181,3 +218,63 @@ async def test_transcribe_title_falls_back_to_filename_on_error(tmp_path, fake_t
 
     assert result.title == "meeting.mp3"
     assert result.body.startswith("meeting.mp3\n\n")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_emits_format_phase_via_on_phase(tmp_path, fake_polling):
+    """on_phase("Форматирую…") must be called before analyze_transcript."""
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    phases: list[str] = []
+
+    async def record_phase(label: str) -> None:
+        phases.append(label)
+
+    await transcriber_module.transcribe(str(tmp_path / "a.mp3"), on_phase=record_phase)
+
+    assert "Форматирую…" in phases
+
+
+@pytest.mark.asyncio
+async def test_transcribe_progress_fraction_called(tmp_path, fake_polling):
+    """on_progress_fraction should be called during polling and reach 1.0 at end."""
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    fractions: list[float] = []
+
+    async def record_fraction(f: float) -> None:
+        fractions.append(f)
+
+    await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"), on_progress_fraction=record_fraction
+    )
+
+    assert fractions[-1] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_transcribe_polls_through_queued_and_processing(tmp_path, fake_polling):
+    """Polling loop should iterate through queued → processing → completed."""
+    _submit_calls, holder = fake_polling
+    utterances = [_utt("A", "ok")]
+    holder["statuses"] = [
+        _make_status("queued", utterances),
+        _make_status("processing", utterances),
+        _make_status("completed", utterances),
+    ]
+
+    fractions: list[float] = []
+
+    async def record_fraction(f: float) -> None:
+        fractions.append(f)
+
+    result = await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"), on_progress_fraction=record_fraction
+    )
+
+    assert result.raw_text == "ok"
+    # queued → 0.05, processing → some value in (0.05, 0.90], completed → 1.0
+    assert fractions[0] == pytest.approx(0.05)
+    assert fractions[-1] == pytest.approx(1.0)

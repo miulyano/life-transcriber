@@ -90,8 +90,12 @@ async def _process_upload(
 
                 async def on_phase_change(label: str) -> None:
                     now = time.monotonic()
-                    if label == "Отправляю результат…":
-                        timings["transcribe_seconds"] = now - transcribe_started_at
+                    if label == "Форматирую…":
+                        timings["format_started_at"] = now
+                    elif label == "Отправляю результат…":
+                        timings["transcribe_seconds"] = timings.get(
+                            "format_started_at", now
+                        ) - transcribe_started_at
                         timings["delivery_started_at"] = now
 
                 async def deliver_text(text: str) -> None:

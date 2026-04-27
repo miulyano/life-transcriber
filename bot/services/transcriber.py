@@ -5,30 +5,31 @@ Returns a :class:`FormattedTranscript` with:
 - ``raw_text`` — the AssemblyAI text without speaker prefixes (used by
   ``cleanup_transcript`` and ``summarize`` callbacks so they get full context).
 
-AssemblyAI handles diarization (real, acoustic), punctuation, casing and
-paragraph segmentation server-side, so we no longer chunk audio nor ask GPT
-to "guess" speakers from prose.
+Progress is reported via real AssemblyAI status polling (queued → processing →
+completed) — no fake timer.  The GPT formatting step (title + speaker names)
+triggers the "Форматирую…" phase via ``on_phase`` callback.
 """
 import asyncio
 import logging
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 import assemblyai as aai
+from assemblyai import api as _aai_api
 
 from bot.config import settings
-from bot.services.formatter import generate_title, render_with_speakers
+from bot.services.formatter import analyze_transcript, render_with_speakers
 from bot.services.word_boost import (
     apply_custom_spelling,
     load_custom_spelling,
     load_word_boost,
 )
-from bot.utils.fake_progress import FractionCallback, run_with_fake_progress
+from bot.utils.fake_progress import FractionCallback
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], Awaitable[None]]
+PhaseCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -72,7 +73,7 @@ def _build_config() -> aai.TranscriptionConfig:
     return cfg
 
 
-def _utterances_from_response(transcript: "aai.Transcript") -> list[Utterance]:
+def _utterances_from_response(transcript) -> list[Utterance]:
     out: list[Utterance] = []
     for u in transcript.utterances or []:
         out.append(
@@ -86,68 +87,100 @@ def _utterances_from_response(transcript: "aai.Transcript") -> list[Utterance]:
     return out
 
 
-async def _run_assemblyai(audio_path: str) -> "aai.Transcript":
-    """Submit audio to AssemblyAI and wait for completion (off the event loop)."""
+async def _run_assemblyai(
+    audio_path: str,
+    on_fraction: Optional[FractionCallback] = None,
+) -> object:
+    """Submit audio to AssemblyAI, poll for real status, return completed transcript.
+
+    Progress fraction: ~5% while queued, grows 0.10→0.90 during processing.
+    Uses transcript._impl.transcript_id (internal SDK field) to enable manual
+    polling via assemblyai.api.get_transcript without a second blocking call.
+    """
     config = _build_config()
     transcriber = aai.Transcriber(config=config)
 
-    def _do() -> "aai.Transcript":
-        # Synchronous SDK call wraps upload + polling internally.
-        return transcriber.transcribe(audio_path)
+    # Non-blocking submit: uploads file + queues job
+    transcript = await asyncio.to_thread(transcriber.submit, audio_path)
+    # _impl is internal but stable — only way to get ID without blocking
+    transcript_id = transcript._impl.transcript_id
+    http_client = transcript._client.http_client
 
-    transcript = await asyncio.to_thread(_do)
-    if transcript.status == aai.TranscriptStatus.error:
-        raise RuntimeError(f"AssemblyAI error: {transcript.error}")
-    return transcript
+    processing_start: Optional[float] = None
+
+    while True:
+        raw = await asyncio.to_thread(_aai_api.get_transcript, http_client, transcript_id)
+
+        if raw.status == aai.TranscriptStatus.queued:
+            frac = 0.05
+        elif raw.status == aai.TranscriptStatus.processing:
+            if processing_start is None:
+                processing_start = asyncio.get_event_loop().time()
+            elapsed = asyncio.get_event_loop().time() - processing_start
+            frac = min(0.90, 0.10 + elapsed / 120.0)
+        elif raw.status in (aai.TranscriptStatus.completed, aai.TranscriptStatus.error):
+            break
+        else:
+            frac = 0.5
+
+        if on_fraction:
+            await on_fraction(frac)
+        await asyncio.sleep(3.0)
+
+    if raw.status == aai.TranscriptStatus.error:
+        raise RuntimeError(f"AssemblyAI error: {raw.error}")
+    if on_fraction:
+        await on_fraction(1.0)
+    return raw
 
 
 async def transcribe(
     audio_path: str,
     *,
     filename_hint: Optional[str] = None,
-    on_progress: Optional[ProgressCallback] = None,
+    on_phase: Optional[PhaseCallback] = None,
+    on_progress: Optional[ProgressCallback] = None,  # unused, kept for API compat
     on_progress_fraction: Optional[FractionCallback] = None,
 ) -> FormattedTranscript:
     """Transcribe audio and return a fully formatted transcript ready to deliver.
 
-    A fake-progress bar is shown if ``on_progress_fraction`` is provided —
-    AssemblyAI doesn't expose real progress, so we fake it as before.
+    Phases emitted via ``on_phase``:
+    - "Форматирую…" — when the GPT analysis step begins (title + speaker names).
+    The caller is responsible for setting the initial "Транскрибирую…" phase.
     """
-    if on_progress_fraction is not None:
-        # Rough estimate: AssemblyAI Universal processes ~10× real-time,
-        # plus ~5s upload. Use a conservative 30s default — the loop caps
-        # at FAKE_CEILING anyway.
-        return await run_with_fake_progress(
-            _transcribe_inner(audio_path, filename_hint),
-            on_progress_fraction,
-            expected_seconds=30.0,
-        )
-    return await _transcribe_inner(audio_path, filename_hint)
+    return await _transcribe_inner(audio_path, filename_hint, on_phase, on_progress_fraction)
 
 
 async def _transcribe_inner(
-    audio_path: str, filename_hint: Optional[str]
+    audio_path: str,
+    filename_hint: Optional[str],
+    on_phase: Optional[PhaseCallback],
+    on_fraction: Optional[FractionCallback],
 ) -> FormattedTranscript:
-    transcript = await _run_assemblyai(audio_path)
+    transcript = await _run_assemblyai(audio_path, on_fraction)
     raw_text = (transcript.text or "").strip()
     raw_text = apply_custom_spelling(raw_text, _CUSTOM_SPELLING)
 
     utterances = _utterances_from_response(transcript)
-    # Apply custom_spelling to each utterance too, otherwise the body and
-    # raw_text would diverge.
     for u in utterances:
         u.text = apply_custom_spelling(u.text, _CUSTOM_SPELLING)
 
     speaker_count = len({u.speaker for u in utterances}) if utterances else (1 if raw_text else 0)
-    body_text = render_with_speakers(utterances) if utterances else raw_text
+
+    if on_phase:
+        await on_phase("Форматирую…")
 
     title = ""
+    name_map: dict[str, str] = {}
     if raw_text:
-        with suppress(Exception):
-            title = await generate_title(raw_text, filename_hint)
+        try:
+            title, name_map = await analyze_transcript(raw_text, utterances, filename_hint)
+        except Exception:
+            logger.warning("analyze_transcript raised, falling back to filename", exc_info=True)
         if not title:
             title = (filename_hint or "").strip()
 
+    body_text = render_with_speakers(utterances, name_map) if utterances else raw_text
     body = f"{title}\n\n{body_text}".strip() if title else body_text
     language = getattr(transcript, "language_code", None) or settings.FORCE_LANGUAGE_CODE
     return FormattedTranscript(

@@ -31,7 +31,7 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
     reporter = _Reporter()
     events = []
 
-    async def fake_transcribe(path, *, filename_hint=None, on_progress=None, on_progress_fraction=None):
+    async def fake_transcribe(path, *, filename_hint=None, on_phase=None, on_progress=None, on_progress_fraction=None):
         events.append(("transcribe", path, filename_hint))
         return _result(body="T\n\nСпикер 1: hi")
 
@@ -75,3 +75,4 @@ async def test_pipeline_passes_none_filename_hint(monkeypatch):
     )
 
     assert transcribe_mock.await_args.kwargs["filename_hint"] is None
+    assert "on_phase" in transcribe_mock.await_args.kwargs

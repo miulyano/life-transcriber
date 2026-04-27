@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from bot.handlers import voice
+from bot.handlers import _tg_media
 
 
 async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
@@ -41,16 +41,16 @@ async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
     async def fake_reply_text_or_file(_message, text):
         events.append(("reply", text))
 
-    monkeypatch.setattr(voice.settings, "TEMP_DIR", str(tmp_path))
-    monkeypatch.setattr(voice, "ProgressReporter", Reporter)
-    monkeypatch.setattr(voice, "run_transcription_pipeline", fake_pipeline)
-    monkeypatch.setattr(voice, "reply_text_or_file", fake_reply_text_or_file)
+    monkeypatch.setattr(_tg_media.settings, "TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr(_tg_media, "ProgressReporter", Reporter)
+    monkeypatch.setattr(_tg_media, "run_transcription_pipeline", fake_pipeline)
+    monkeypatch.setattr(_tg_media, "reply_text_or_file", fake_reply_text_or_file)
 
     bot = MagicMock()
     bot.download = AsyncMock(side_effect=fake_download)
     message = MagicMock()
 
-    await voice._handle(message, bot, "file-id", ".ogg", "Транскрибирую…")
+    await _tg_media.process_tg_media(message, bot, "file-id", ".ogg", label="Транскрибирую…")
 
     pipeline_event = next(
         event

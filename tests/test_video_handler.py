@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from bot.handlers import video
+from bot.handlers import _tg_media
 
 
 async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
@@ -49,17 +49,19 @@ async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
     async def fake_reply_text_or_file(_message, text):
         events.append(("reply", text))
 
-    monkeypatch.setattr(video.settings, "TEMP_DIR", str(tmp_path))
-    monkeypatch.setattr(video, "ProgressReporter", Reporter)
-    monkeypatch.setattr(video, "extract_audio", fake_extract_audio)
-    monkeypatch.setattr(video, "run_transcription_pipeline", fake_pipeline)
-    monkeypatch.setattr(video, "reply_text_or_file", fake_reply_text_or_file)
+    monkeypatch.setattr(_tg_media.settings, "TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr(_tg_media, "ProgressReporter", Reporter)
+    monkeypatch.setattr(_tg_media, "extract_audio", fake_extract_audio)
+    monkeypatch.setattr(_tg_media, "run_transcription_pipeline", fake_pipeline)
+    monkeypatch.setattr(_tg_media, "reply_text_or_file", fake_reply_text_or_file)
 
     bot = MagicMock()
     bot.download = AsyncMock(side_effect=fake_download)
     message = MagicMock()
 
-    await video._process(message, bot, "file-id", ".mp4")
+    await _tg_media.process_tg_media(
+        message, bot, "file-id", ".mp4", label="Скачиваю видео из Telegram…", extract_audio_first=True
+    )
 
     assert events.index(("phase", "Отправляю результат…")) < events.index(("reply", "transcript"))
     assert events.index(("reply", "transcript")) < events.index("finish")

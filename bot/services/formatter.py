@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional
 from openai import AsyncOpenAI
 
 from bot.config import settings
+from bot.services.prompts import ANALYSIS_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
     from bot.services.transcriber import Utterance
@@ -23,24 +24,6 @@ client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 ANALYSIS_MAX_INPUT_CHARS = 20_000  # ~8K tokens for Russian; stays under 30K TPM limit
 ANALYSIS_MAX_TOKENS = 200
-
-ANALYSIS_SYSTEM_PROMPT = """\
-Ты — ассистент. По транскрипции аудио/видео верни JSON-объект с двумя полями:
-
-"title" — короткий заголовок, до ~80 символов, отражает суть диалога/материала. \
-Без кавычек, без точки в конце. Если подсказка источника нечитаема (хэш, uuid, \
-случайный идентификатор) — игнорируй её и опирайся только на содержание.
-
-"speakers" — объект, где ключи — метки спикеров (A, B, C...), значения — реальные \
-имена, если их можно однозначно определить из текста (самоназвание, прямое обращение). \
-Если имя спикера установить нельзя — не включай ключ. Если имён нет вообще — пустой объект.
-
-Пример (имена известны):
-{"title": "Встреча команды: планирование спринта", "speakers": {"A": "Иван", "B": "Маша"}}
-
-Пример (имена неизвестны):
-{"title": "Обзор продукта: демо новых фич", "speakers": {}}
-"""
 
 _LABELED_BLOCK_RE = re.compile(r"^([^\n:]{1,40}?):\s(.*)", re.DOTALL | re.UNICODE)
 

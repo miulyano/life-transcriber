@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-ANALYSIS_MAX_INPUT_CHARS = 100_000
+ANALYSIS_MAX_INPUT_CHARS = 20_000  # ~8K tokens for Russian; stays under 30K TPM limit
 ANALYSIS_MAX_TOKENS = 200
 
 ANALYSIS_SYSTEM_PROMPT = """\

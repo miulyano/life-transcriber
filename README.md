@@ -62,6 +62,10 @@ cd life-transcriber
 3. Пополни баланс на https://platform.openai.com/account/billing
    (минимум $5 — без баланса API не работает)
 
+**AssemblyAI API key:**
+1. Зайди на https://www.assemblyai.com/ и зарегистрируйся
+2. В дашборде скопируй API key — длинная строка, видна сразу на главной странице
+
 **Telegram user ID:**
 1. Напиши боту [@userinfobot](https://t.me/userinfobot) команду `/start`
 2. Он пришлёт твой ID (число типа `123456789`)
@@ -78,11 +82,13 @@ cp .env.example .env
 ```env
 BOT_TOKEN=1234567890:ABCdef...
 OPENAI_API_KEY=sk-proj-...
+ASSEMBLYAI_API_KEY=your_assemblyai_api_key_here
 ALLOWED_USER_IDS=123456789,987654321
 ```
 
 Опциональные переменные (дефолты в `.env.example`):
 - `LONG_TEXT_THRESHOLD=2000` — порог длины текста, после которого ответ идёт файлом
+- `MIN_SUMMARY_LEN=500` — минимальная длина текста (символов), при которой появляется кнопка «📝 Краткий конспект»
 - `ASSEMBLYAI_SPEECH_MODEL=universal` — модель AssemblyAI (`universal` | `nano` | `slam-1`)
 - `FORCE_LANGUAGE_CODE=` — если задан (например `ru`), отключает автодетект языка; полезно для коротких клипов < 30 сек, где автодетект нестабилен
 - `WORD_BOOST_FILE=bot/data/word_boost.txt` — путь к файлу с доменными терминами (по одному на строку, комментарии через `#`); директория монтируется volume, можно пополнять без пересборки образа

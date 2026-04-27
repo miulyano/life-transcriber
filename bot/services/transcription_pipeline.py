@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Optional, Protocol
 
-from bot.services.formatter import format_transcript
 from bot.services.transcriber import transcribe
 
 
@@ -26,16 +25,15 @@ async def run_transcription_pipeline(
     filename_hint: Optional[str] = None,
     on_phase_change: Optional[PhaseCallback] = None,
 ) -> None:
-    text = await transcribe(
+    """Transcribe audio (AssemblyAI) and deliver the formatted result.
+
+    AssemblyAI returns already-formatted text with real diarization, so the
+    old separate "форматирую…" stage is gone — there's no GPT pass over the
+    body. Title generation runs inline inside :func:`transcribe` and is
+    invisible to the user.
+    """
+    result = await transcribe(
         audio_path,
-        on_progress=reporter.set_progress,
-        on_progress_fraction=reporter.set_progress_fraction,
-    )
-    if on_phase_change is not None:
-        await on_phase_change("Форматирую…")
-    await reporter.set_phase("Форматирую…")
-    text = await format_transcript(
-        text,
         filename_hint=filename_hint,
         on_progress=reporter.set_progress,
         on_progress_fraction=reporter.set_progress_fraction,
@@ -43,4 +41,4 @@ async def run_transcription_pipeline(
     if on_phase_change is not None:
         await on_phase_change("Отправляю результат…")
     await reporter.set_phase("Отправляю результат…")
-    await deliver_text(text)
+    await deliver_text(result.body)

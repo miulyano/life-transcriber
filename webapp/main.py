@@ -90,12 +90,8 @@ async def _process_upload(
 
                 async def on_phase_change(label: str) -> None:
                     now = time.monotonic()
-                    if label == "Форматирую…":
+                    if label == "Отправляю результат…":
                         timings["transcribe_seconds"] = now - transcribe_started_at
-                        timings["format_started_at"] = now
-                    elif label == "Отправляю результат…":
-                        format_started_at = timings.get("format_started_at", now)
-                        timings["format_seconds"] = now - format_started_at
                         timings["delivery_started_at"] = now
 
                 async def deliver_text(text: str) -> None:
@@ -113,20 +109,18 @@ async def _process_upload(
                     "transcribe_seconds",
                     now - transcribe_started_at,
                 )
-                format_seconds = timings.get("format_seconds", 0.0)
                 delivery_started_at = timings.get("delivery_started_at", now)
                 delivery_seconds = now - delivery_started_at
                 await reporter.finish()
 
                 logger.info(
                     "Processed upload for user %s: source=%s bytes, audio=%s bytes, "
-                    "prepare=%.2fs, transcribe=%.2fs, format=%.2fs, delivery=%.2fs, total=%.2fs",
+                    "prepare=%.2fs, transcribe=%.2fs, delivery=%.2fs, total=%.2fs",
                     user_id,
                     source_bytes,
                     audio_bytes,
                     prepare_seconds,
                     transcribe_seconds,
-                    format_seconds,
                     delivery_seconds,
                     time.monotonic() - started_at,
                 )

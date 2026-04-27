@@ -2,7 +2,12 @@ from bot.config import Settings
 
 
 def _make(user_ids: str) -> Settings:
-    return Settings(BOT_TOKEN="t", OPENAI_API_KEY="k", ALLOWED_USER_IDS=user_ids)
+    return Settings(
+        BOT_TOKEN="t",
+        OPENAI_API_KEY="k",
+        ASSEMBLYAI_API_KEY="aai",
+        ALLOWED_USER_IDS=user_ids,
+    )
 
 
 def test_multiple_user_ids():
@@ -28,7 +33,9 @@ def test_trailing_comma_skipped():
 def test_defaults():
     s = _make("111")
     assert s.LONG_TEXT_THRESHOLD == 2000
-    assert s.WHISPER_MODEL == "whisper-1"
+    assert s.ASSEMBLYAI_SPEECH_MODEL == "universal"
+    assert s.WORD_BOOST_LEVEL == "high"
+    assert s.FORCE_LANGUAGE_CODE is None
     assert s.GPT_MODEL == "gpt-4o"
     assert s.TEMP_DIR == "/tmp/transcriber"
     assert s.COBALT_API_URL == "http://cobalt:9000"

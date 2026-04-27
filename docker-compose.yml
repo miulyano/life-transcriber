@@ -7,6 +7,7 @@ services:
       - cobalt
     volumes:
       - transcriber_tmp:/tmp/transcriber
+      - ./bot/data:/app/bot/data:ro
     deploy:
       resources:
         limits:

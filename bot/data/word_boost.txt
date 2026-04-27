@@ -1,0 +1,18 @@
+# word_boost: domain terms biased during AssemblyAI transcription.
+# One term per line. Lines starting with '#' and blank lines are ignored.
+# Up to ~1000 entries supported. Edit on the VPS without rebuilding the image
+# (the directory is mounted as a volume — see docker-compose.yml).
+
+# --- Project / stack ---
+aiogram
+yt-dlp
+AssemblyAI
+Whisper
+pyannote
+ChatGPT
+GPT-4o
+Telegram
+Yandex
+Cobalt
+
+# --- Add your own below ---

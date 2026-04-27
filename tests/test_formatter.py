@@ -1,3 +1,4 @@
+"""Tests for bot.services.formatter — render_with_speakers + title generation."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -6,480 +7,143 @@ import pytest
 from bot.services import formatter
 
 
-def _response(content: str, finish_reason: str = "stop"):
+def _utt(speaker, text):
+    return SimpleNamespace(speaker=speaker, text=text, start=0, end=0)
+
+
+# ---------- render_with_speakers ----------
+
+
+def test_render_two_speakers_maps_to_russian_labels():
+    out = formatter.render_with_speakers([
+        _utt("A", "Привет."),
+        _utt("B", "Здравствуй."),
+        _utt("A", "Как дела?"),
+    ])
+    assert "Спикер 1: Привет." in out
+    assert "Спикер 2: Здравствуй." in out
+    assert "Спикер 1: Как дела?" in out
+
+
+def test_render_three_speakers_in_appearance_order():
+    out = formatter.render_with_speakers([
+        _utt("B", "Б."),
+        _utt("A", "А."),
+        _utt("C", "В."),
+    ])
+    # First seen is B → Спикер 1, then A → Спикер 2, then C → Спикер 3.
+    assert out.split("\n\n") == [
+        "Спикер 1: Б.",
+        "Спикер 2: А.",
+        "Спикер 3: В.",
+    ]
+
+
+def test_render_single_speaker_no_prefix():
+    out = formatter.render_with_speakers([
+        _utt("A", "Первый абзац."),
+        _utt("A", "Второй абзац."),
+    ])
+    assert "Спикер" not in out
+    assert out == "Первый абзац.\n\nВторой абзац."
+
+
+def test_render_merges_adjacent_same_speaker():
+    out = formatter.render_with_speakers([
+        _utt("A", "Первая часть."),
+        _utt("A", "Вторая часть."),
+        _utt("B", "Ответ."),
+    ])
+    # First two A-utterances must collapse into a single labelled block.
+    assert "Спикер 1: Первая часть. Вторая часть." in out
+    assert "Спикер 2: Ответ." in out
+
+
+def test_render_empty_returns_empty():
+    assert formatter.render_with_speakers([]) == ""
+
+
+def test_render_skips_blank_utterances():
+    out = formatter.render_with_speakers([
+        _utt("A", "Реплика."),
+        _utt("B", "   "),
+        _utt("A", "Ещё."),
+    ])
+    assert "B" not in out
+    assert "Спикер" in out
+
+
+# ---------- generate_title ----------
+
+
+def _response(content: str):
     return SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content=content),
-                finish_reason=finish_reason,
-            )
-        ]
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
     )
 
 
-def _long_raw(chars: int = 20_000) -> str:
-    """Build a Russian-looking transcript of full sentences, long enough to
-    force chunking at FORMATTER_CHUNK_CHARS=8000.
-    """
-    sentence = "Это предложение длинной транскрипции для теста разбиения на чанки."
-    # ~70 chars each → ~285 sentences for 20k chars.
-    needed = (chars // len(sentence)) + 10
-    return " ".join([sentence] * needed)
-
-
-# ---------- single-call path ----------
-
-
-async def test_short_input_single_call_returns_formatted_text(monkeypatch):
-    create = AsyncMock(return_value=_response("Title\n\nbody paragraph"))
+@pytest.mark.asyncio
+async def test_generate_title_returns_clean_string(monkeypatch):
+    create = AsyncMock(return_value=_response('"  Подкаст про AI.  "'))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    result = await formatter.format_transcript("short input text")
+    title = await formatter.generate_title("длинный текст транскрипции", None)
 
-    assert result == "Title\n\nbody paragraph"
-    create.assert_awaited_once()
-    kwargs = create.await_args.kwargs
-    assert kwargs["messages"][0]["content"] == formatter.SYSTEM_PROMPT
+    assert title == "Подкаст про AI"
 
 
-async def test_short_input_with_truncation_returns_raw(monkeypatch, caplog):
-    # finish_reason=length on the single-call path → fall back to raw_text.
-    create = AsyncMock(return_value=_response("partial", finish_reason="length"))
+@pytest.mark.asyncio
+async def test_generate_title_uses_full_text_under_cap(monkeypatch):
+    create = AsyncMock(return_value=_response("Заголовок"))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    raw = "short input text"
-    result = await formatter.format_transcript(raw)
+    raw = "А" * 500  # well under TITLE_MAX_INPUT_CHARS
+    await formatter.generate_title(raw, None)
 
-    assert result == raw
-    create.assert_awaited_once()
+    user_msg = create.await_args.kwargs["messages"][1]["content"]
+    assert raw in user_msg
 
 
-async def test_short_input_api_exception_returns_raw(monkeypatch):
-    create = AsyncMock(side_effect=RuntimeError("openai down"))
+@pytest.mark.asyncio
+async def test_generate_title_truncates_when_too_long(monkeypatch):
+    create = AsyncMock(return_value=_response("Заголовок"))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    raw = "short input text"
-    result = await formatter.format_transcript(raw)
+    raw = "А" * (formatter.TITLE_MAX_INPUT_CHARS + 1000)
+    await formatter.generate_title(raw, None)
 
-    assert result == raw
+    user_msg = create.await_args.kwargs["messages"][1]["content"]
+    # We didn't send the whole giant raw text.
+    assert len(user_msg) < formatter.TITLE_MAX_INPUT_CHARS + 200
+    assert ("А" * formatter.TITLE_MAX_INPUT_CHARS) in user_msg
 
 
-async def test_empty_text_short_circuits(monkeypatch):
+@pytest.mark.asyncio
+async def test_generate_title_empty_input_returns_empty(monkeypatch):
     create = AsyncMock()
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    assert await formatter.format_transcript("") == ""
-    assert await formatter.format_transcript("   ") == "   "
+    assert await formatter.generate_title("", None) == ""
+    assert await formatter.generate_title("   ", None) == ""
     create.assert_not_awaited()
 
 
-# ---------- chunked path ----------
-
-
-async def test_long_input_chunked_flow_title_plus_parts(monkeypatch):
-    raw = _long_raw(20_000)
-
-    # Expected order of calls:
-    #   1) title generation (TITLE_SYSTEM_PROMPT)
-    #   2) first chunk (CHUNK_SYSTEM_PROMPT)
-    #   3..N) continuation chunks (CONTINUATION_SYSTEM_PROMPT)
-    create = AsyncMock(
-        side_effect=[
-            _response("Short Podcast Title"),
-            _response("Иван: первая реплика.\n\nМария: вторая реплика."),
-            _response("Иван: третья реплика продолжения."),
-            _response("Мария: финальная реплика."),
-        ]
-    )
+@pytest.mark.asyncio
+async def test_generate_title_includes_filename_hint(monkeypatch):
+    create = AsyncMock(return_value=_response("T"))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    progress_reports: list[tuple[int, int]] = []
+    await formatter.generate_title("text", "meeting.mp3")
 
-    async def on_progress(done: int, total: int) -> None:
-        progress_reports.append((done, total))
-
-    result = await formatter.format_transcript(
-        raw, filename_hint="podcast.mp3", on_progress=on_progress
-    )
-
-    # Call count is at least 1 (title) + N chunk calls. Tune expectation to the
-    # actual chunk count the splitter produced.
-    chunks = formatter.split_long_text(
-        raw,
-        max_chars=formatter.FORMATTER_CHUNK_CHARS,
-        overlap_chars=0,
-        prefer_boundaries=formatter.SENTENCE_BOUNDARIES,
-    )
-    assert len(chunks) >= 2, "test precondition: input must actually chunk"
-    assert create.await_count == 1 + len(chunks)
-
-    calls = create.await_args_list
-    assert calls[0].kwargs["messages"][0]["content"] == formatter.TITLE_SYSTEM_PROMPT
-    assert calls[1].kwargs["messages"][0]["content"] == formatter.CHUNK_SYSTEM_PROMPT
-    for call in calls[2:]:
-        assert (
-            call.kwargs["messages"][0]["content"]
-            == formatter.CONTINUATION_SYSTEM_PROMPT
-        )
-
-    # Result must start with title + blank line.
-    assert result.startswith("Short Podcast Title\n\n")
-    # And must contain all chunk bodies.
-    assert "Иван: первая реплика." in result
-    assert "Мария: финальная реплика." in result
-
-    # Progress must be reported with total = len(chunks) + 1 (title step).
-    assert progress_reports
-    totals = {total for _, total in progress_reports}
-    assert totals == {len(chunks) + 1}
-    # Final report should be (total, total).
-    assert progress_reports[-1] == (len(chunks) + 1, len(chunks) + 1)
+    user_msg = create.await_args.kwargs["messages"][1]["content"]
+    assert "Source: meeting.mp3" in user_msg
 
 
-async def test_long_input_speaker_labels_passed_to_continuation(monkeypatch):
-    raw = _long_raw(20_000)
-    create = AsyncMock(
-        side_effect=[
-            _response("Title"),
-            _response("Иван: привет.\n\nМария: здравствуй."),
-            # Continuation responses: we only care about what we feed in.
-            _response("Иван: продолжение."),
-            _response("Мария: ещё реплика."),
-        ]
-    )
+@pytest.mark.asyncio
+async def test_generate_title_uses_temperature_zero(monkeypatch):
+    create = AsyncMock(return_value=_response("T"))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    await formatter.format_transcript(raw, filename_hint="hint.mp3")
+    await formatter.generate_title("text", None)
 
-    # Third and later calls must carry the speaker-labels block referencing
-    # both labels extracted from the first formatted chunk.
-    for call in create.await_args_list[2:]:
-        user_msg = call.kwargs["messages"][1]["content"]
-        assert "Метки спикеров из предыдущих фрагментов" in user_msg
-        assert "Иван" in user_msg
-        assert "Мария" in user_msg
-        assert "Последним в предыдущем фрагменте говорил" in user_msg
-
-
-async def test_long_input_chunk_retry_then_success(monkeypatch):
-    raw = _long_raw(20_000)
-    chunks = formatter.split_long_text(
-        raw,
-        max_chars=formatter.FORMATTER_CHUNK_CHARS,
-        overlap_chars=0,
-        prefer_boundaries=formatter.SENTENCE_BOUNDARIES,
-    )
-    expected_chunk_calls = len(chunks)
-
-    # Call plan: title OK, first chunk FAILS once then OK, rest OK.
-    responses: list = [_response("Title")]  # title
-    responses.append(RuntimeError("transient"))  # first chunk attempt 1
-    responses.append(_response("first chunk OK"))  # first chunk attempt 2 (retry)
-    for i in range(expected_chunk_calls - 1):
-        responses.append(_response(f"cont {i}"))
-
-    create = AsyncMock(side_effect=responses)
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    result = await formatter.format_transcript(raw)
-    # Must not fall back to raw — retry succeeded.
-    assert "first chunk OK" in result
-
-
-async def test_long_input_chunk_fails_twice_returns_raw(monkeypatch):
-    raw = _long_raw(20_000)
-
-    responses = [
-        _response("Title"),
-        RuntimeError("fail 1"),
-        RuntimeError("fail 2"),  # retry also fails → whole chunked flow aborts
-    ]
-    create = AsyncMock(side_effect=responses)
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    result = await formatter.format_transcript(raw)
-    assert result == raw
-
-
-async def test_long_input_title_failure_falls_back_to_filename(monkeypatch):
-    raw = _long_raw(20_000)
-    chunks = formatter.split_long_text(
-        raw,
-        max_chars=formatter.FORMATTER_CHUNK_CHARS,
-        overlap_chars=0,
-        prefer_boundaries=formatter.SENTENCE_BOUNDARIES,
-    )
-    responses: list = [RuntimeError("title api down")]
-    responses.append(_response("first body"))
-    for i in range(len(chunks) - 1):
-        responses.append(_response(f"cont {i}"))
-    create = AsyncMock(side_effect=responses)
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    result = await formatter.format_transcript(raw, filename_hint="My Podcast.mp3")
-    assert result.startswith("My Podcast.mp3\n\n")
-
-
-async def test_long_input_title_truncation_ok(monkeypatch):
-    # Title call returning finish_reason=length is not treated as error by
-    # _generate_title (it ignores finish_reason — short output window).
-    raw = _long_raw(20_000)
-    chunks = formatter.split_long_text(
-        raw,
-        max_chars=formatter.FORMATTER_CHUNK_CHARS,
-        overlap_chars=0,
-        prefer_boundaries=formatter.SENTENCE_BOUNDARIES,
-    )
-    responses: list = [_response("Clipped Title", finish_reason="length")]
-    responses.append(_response("first body"))
-    for i in range(len(chunks) - 1):
-        responses.append(_response(f"cont {i}"))
-    create = AsyncMock(side_effect=responses)
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    result = await formatter.format_transcript(raw)
-    assert result.startswith("Clipped Title\n\n")
-
-
-# ---------- speaker-label extraction ----------
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Иван: привет.\n\nМария: пока.", ["Иван", "Мария"]),
-        ("Спикер 1: a\nСпикер 2: b\nСпикер 1: c", ["Спикер 1", "Спикер 2"]),
-        ("No speakers here, just prose.", []),
-        ("http://example.com: not a label", []),
-        ("Alex: one\nBob: two\nAlex: three", ["Alex", "Bob"]),
-    ],
-)
-def test_extract_speaker_labels(text, expected):
-    assert formatter._extract_speaker_labels(text) == expected
-
-
-# ---------- speaker post-processing ----------
-
-
-def test_strip_speaker_brackets_unwraps_angle():
-    text = "<Спикер 1>: привет.\n<Спикер 2>: здравствуй."
-    assert formatter._strip_speaker_brackets(text) == (
-        "Спикер 1: привет.\nСпикер 2: здравствуй."
-    )
-
-
-def test_strip_speaker_brackets_unwraps_square():
-    text = "[Иван]: привет."
-    assert formatter._strip_speaker_brackets(text) == "Иван: привет."
-
-
-def test_strip_speaker_brackets_leaves_inline_angle_intact():
-    # ``<`` inside the body (not at line start as a label wrapper) must stay.
-    text = "Иван: a < b.\nМария: ok."
-    assert formatter._strip_speaker_brackets(text) == text
-
-
-def test_normalize_speaker_labels_canonicalizes_variants():
-    text = "Speaker 1: a\nспикер 2: b\nСпикер 3: c\nspeaker 4: d"
-    assert formatter._normalize_speaker_labels(text) == (
-        "Спикер 1: a\nСпикер 2: b\nСпикер 3: c\nСпикер 4: d"
-    )
-
-
-def test_normalize_speaker_labels_does_not_touch_named_speakers():
-    text = "Иван: привет.\nМария: пока."
-    assert formatter._normalize_speaker_labels(text) == text
-
-
-def test_postprocess_combines_strip_and_normalize():
-    text = "<Speaker 1>: привет.\n<спикер 2>: пока."
-    assert formatter._postprocess_speakers(text) == (
-        "Спикер 1: привет.\nСпикер 2: пока."
-    )
-
-
-# ---------- merge adjacent same-speaker replies ----------
-
-
-def test_merge_adjacent_same_speaker_folds_duplicate_labels():
-    text = (
-        "Спикер 1: первая часть мысли.\n\n"
-        "Спикер 1: продолжение той же мысли.\n\n"
-        "Спикер 2: ответ."
-    )
-    merged = formatter._merge_adjacent_same_speaker(text)
-    assert merged == (
-        "Спикер 1: первая часть мысли. продолжение той же мысли.\n\n"
-        "Спикер 2: ответ."
-    )
-
-
-def test_merge_adjacent_same_speaker_leaves_different_labels_alone():
-    text = "Иван: один.\n\nМария: два.\n\nИван: три."
-    assert formatter._merge_adjacent_same_speaker(text) == text
-
-
-def test_merge_adjacent_same_speaker_collapses_three_in_a_row():
-    text = "Спикер 1: a.\n\nСпикер 1: b.\n\nСпикер 1: c."
-    assert formatter._merge_adjacent_same_speaker(text) == "Спикер 1: a. b. c."
-
-
-def test_merge_adjacent_same_speaker_leaves_monologue_prose_untouched():
-    text = "Заголовок\n\nПервый абзац.\n\nВторой абзац без меток."
-    assert formatter._merge_adjacent_same_speaker(text) == text
-
-
-def test_postprocess_integrates_merge_with_normalization():
-    # Model emits `Speaker N` twice in a row — normalize THEN merge.
-    text = "Speaker 1: один.\n\nspeaker 1: два."
-    assert formatter._postprocess_speakers(text) == "Спикер 1: один. два."
-
-
-# ---------- previous raw tail in continuation message ----------
-
-
-def test_build_continuation_includes_previous_raw_tail():
-    msg = formatter._build_continuation_user_message(
-        chunk_text="новый фрагмент",
-        filename_hint=None,
-        speaker_samples=[("Иван", "последняя реплика")],
-        last_speaker="Иван",
-        previous_raw_tail="конец предыдущего сырого текста",
-    )
-    assert "Хвост сырого текста предыдущего фрагмента" in msg
-    assert "конец предыдущего сырого текста" in msg
-    assert "не включай его в ответ" in msg
-    # Labels block and new chunk still present.
-    assert "Иван" in msg
-    assert "новый фрагмент" in msg
-
-
-def test_build_continuation_omits_raw_tail_block_when_absent():
-    msg = formatter._build_continuation_user_message(
-        chunk_text="новый фрагмент",
-        filename_hint=None,
-        speaker_samples=[("Иван", "последняя реплика")],
-        last_speaker="Иван",
-    )
-    assert "Хвост сырого текста" not in msg
-
-
-async def test_chunked_flow_passes_previous_raw_tail_to_continuation(monkeypatch):
-    raw = _long_raw(20_000)
-    create = AsyncMock(
-        side_effect=[
-            _response("Title"),
-            _response("Иван: первая реплика."),
-            _response("Иван: продолжение."),
-            _response("Иван: ещё."),
-            _response("Иван: хвост."),
-            _response("Иван: хвост2."),
-        ]
-    )
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    await formatter.format_transcript(raw)
-
-    # Every continuation call (index >=2) must carry the raw tail block.
-    continuation_calls = create.await_args_list[2:]
-    assert continuation_calls, "test precondition: input must produce continuations"
-    for call in continuation_calls:
-        user_msg = call.kwargs["messages"][1]["content"]
-        assert "Хвост сырого текста предыдущего фрагмента" in user_msg
-
-
-# ---------- temperature is deterministic ----------
-
-
-async def test_format_calls_use_temperature_zero(monkeypatch):
-    create = AsyncMock(return_value=_response("Title\n\nbody"))
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    await formatter.format_transcript("short input")
     assert create.await_args.kwargs["temperature"] == 0.0
-
-
-# ---------- speaker samples ----------
-
-
-def test_collect_speaker_samples_alternating_speakers():
-    text = (
-        "Иван: первая реплика Ивана.\n"
-        "Мария: первая реплика Марии.\n"
-        "Иван: вторая реплика Ивана."
-    )
-    samples, last = formatter._collect_speaker_samples(text)
-    labels = [label for label, _ in samples]
-    assert labels == ["Иван", "Мария"]
-    # Иван's sample is his LAST reply, not his first.
-    ivan_sample = dict(samples)["Иван"]
-    assert "вторая реплика Ивана" in ivan_sample
-    assert last == "Иван"
-
-
-def test_collect_speaker_samples_long_monologue_in_tail_keeps_all_speakers():
-    text = (
-        "Иван: короткая реплика.\n"
-        "Мария: ещё одна короткая.\n"
-        "Иван: " + ("длинный монолог " * 200)
-    )
-    samples, last = formatter._collect_speaker_samples(text)
-    labels = [label for label, _ in samples]
-    # Even though Ivan dominates the tail, Maria must still be in samples.
-    assert labels == ["Иван", "Мария"]
-    assert last == "Иван"
-
-
-def test_collect_speaker_samples_no_labels():
-    samples, last = formatter._collect_speaker_samples("plain monologue without labels.")
-    assert samples == []
-    assert last is None
-
-
-def test_collect_speaker_samples_truncates_long_excerpt():
-    long_reply = "x " * 500
-    text = f"Иван: {long_reply}"
-    samples, _ = formatter._collect_speaker_samples(
-        text, max_per_speaker_chars=50
-    )
-    excerpt = samples[0][1]
-    assert excerpt.endswith("…")
-    assert len(excerpt) <= 51  # 50 chars + ellipsis
-
-
-# ---------- post-process integration in single-call and chunked paths ----------
-
-
-async def test_single_call_strips_brackets_in_output(monkeypatch):
-    create = AsyncMock(
-        return_value=_response("Заголовок\n\n<Спикер 1>: привет.\n<Спикер 2>: пока.")
-    )
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    result = await formatter.format_transcript("short text")
-
-    assert "<Спикер" not in result
-    assert "Спикер 1: привет." in result
-    assert "Спикер 2: пока." in result
-
-
-async def test_chunked_path_strips_brackets_and_normalizes(monkeypatch):
-    raw = _long_raw(20_000)
-    create = AsyncMock(
-        side_effect=[
-            _response("Title"),
-            _response("<Speaker 1>: первая.\n<Speaker 2>: вторая."),
-            _response("<спикер 1>: третья."),
-            _response("<Speaker 2>: четвёртая."),
-            _response("<Speaker 1>: пятая."),
-        ]
-    )
-    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
-
-    result = await formatter.format_transcript(raw)
-
-    assert "<Speaker" not in result
-    assert "<спикер" not in result
-    assert "Speaker " not in result  # English variant must be normalized too
-    assert "Спикер 1:" in result
-    assert "Спикер 2:" in result

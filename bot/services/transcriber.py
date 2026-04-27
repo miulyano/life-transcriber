@@ -57,7 +57,7 @@ aai.settings.api_key = settings.ASSEMBLYAI_API_KEY
 
 def _build_config() -> aai.TranscriptionConfig:
     cfg = aai.TranscriptionConfig(
-        speech_model=aai.SpeechModel(settings.ASSEMBLYAI_SPEECH_MODEL),
+        speech_models=[settings.ASSEMBLYAI_SPEECH_MODEL],
         speaker_labels=True,
         punctuate=True,
         format_text=True,

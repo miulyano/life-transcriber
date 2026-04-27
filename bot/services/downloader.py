@@ -139,5 +139,9 @@ async def _download_with_ytdlp(
 
 
 async def extract_audio(video_path: str, output_dir: str) -> str:
-    """Extract audio track from a video file using FFmpeg."""
+    """Extract and normalise audio from a video file (16 kHz mono MP3).
+
+    Thin alias for media.prepare_audio_for_transcription(), exposed here so
+    handlers and pipeline code can import a single downloader entry-point.
+    """
     return await prepare_audio_for_transcription(video_path, output_dir)

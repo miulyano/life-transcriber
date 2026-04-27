@@ -6,6 +6,7 @@ from typing import Optional
 
 import aiohttp
 
+from bot.config import settings
 from bot.services.cobalt_client import extract_video_url, request_cobalt
 from bot.services.stream_download import stream_download_to_file
 from bot.services.user_facing_error import UserFacingError
@@ -67,8 +68,6 @@ async def download_from_instagram(url: str, output_dir: str) -> str:
 async def _request_instagram_video_url(
     session: aiohttp.ClientSession, url: str
 ) -> str:
-    from bot.config import settings
-
     if not settings.INSTAGRAM_COOKIES_PATH:
         raise UserFacingError(
             "instagram",

@@ -157,6 +157,7 @@ async def split_into_paragraphs(text: str) -> str:
     if not text.strip():
         return text
     truncated = text[:PARA_SPLIT_MAX_INPUT]
+    remainder = text[PARA_SPLIT_MAX_INPUT:]
     # Output is the same text with \n\n added — budget ≈ input size.
     # Russian: ~3 chars/token; +20% headroom for paragraph breaks.
     max_tokens = min(16384, int(len(truncated) / 3 * 1.2) + 200)
@@ -171,7 +172,9 @@ async def split_into_paragraphs(text: str) -> str:
             max_tokens=max_tokens,
         )
         result = (response.choices[0].message.content or "").strip()
-        return result or text
+        if not result:
+            return text
+        return result if not remainder else result + "\n\n" + remainder
     except Exception:
         logger.warning("split_into_paragraphs failed", exc_info=True)
         return text

@@ -134,6 +134,57 @@ git branch -d <branch>
 `git log main --oneline` должен быть прямой вертикалью из Conventional Commits-титлов.
 Никаких merge commits, никаких WIP'ов, никаких веток в истории main.
 
+## Версионирование и CHANGELOG
+
+Проект использует **Semantic Versioning** (SemVer): `MAJOR.MINOR.PATCH`.
+
+| Тип изменения | Bump |
+|---|---|
+| `fix` — исправление бага | PATCH |
+| `feat` — новая функция | MINOR |
+| Ломающее изменение API/поведения | MAJOR |
+
+### Правила для каждого PR
+
+**Любой PR, кроме `docs/` и `chore/`, должен:**
+
+1. Обновить файл `VERSION` (поднять нужный компонент).
+2. Добавить запись в раздел `## [Unreleased]` файла `CHANGELOG.md`.
+3. Обновить номер версии в бейдже в `README.md` (строка `img.shields.io/badge/version-...`).
+
+Формат записи в changelog:
+
+```
+### Added / Fixed / Changed / Removed
+- Краткое описание изменения (максимум 1–2 строки)
+```
+
+### Выпуск нового релиза
+
+1. В `CHANGELOG.md` переименовать `## [Unreleased]` → `## [x.y.z] – YYYY-MM-DD`
+   и добавить новый пустой `## [Unreleased]` выше.
+2. Обновить `VERSION` до финального номера.
+3. Обновить бейдж в `README.md`.
+4. Прогнать тесты, открыть PR.
+5. После мерджа: `git tag vX.Y.Z && git push origin vX.Y.Z`
+
+### Пример цикла (patch)
+
+```bash
+# В процессе работы над fix-PR:
+echo "1.0.1" > VERSION
+# В CHANGELOG.md добавить под [Unreleased]:
+# ### Fixed
+# - Исправлен лимит GPT-токенов в split_into_paragraphs
+
+# Перед релизом — переименовать заголовок:
+# [Unreleased] → [1.0.1] – 2026-05-15
+# добавить новый ## [Unreleased] выше
+
+# После мерджа в main:
+git tag v1.0.1 && git push origin v1.0.1
+```
+
 ## Karpathy Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes.

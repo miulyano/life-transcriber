@@ -220,3 +220,36 @@ async def test_analyze_transcript_returns_empty_on_api_error(monkeypatch):
 
     result = await formatter.analyze_transcript("text", [_utt("A", "text")], None)
     assert result == ("", {})
+
+
+# ---------- split_into_paragraphs ----------
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_returns_result_from_gpt(monkeypatch):
+    paragraphed = "Первый абзац.\n\nВторой абзац."
+    create = AsyncMock(return_value=_response(paragraphed))
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    result = await formatter.split_into_paragraphs("Первый абзац. Второй абзац.")
+    assert result == paragraphed
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_returns_original_on_error(monkeypatch):
+    create = AsyncMock(side_effect=RuntimeError("api down"))
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    original = "Сплошной текст без абзацев."
+    result = await formatter.split_into_paragraphs(original)
+    assert result == original
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_empty_returns_unchanged(monkeypatch):
+    create = AsyncMock()
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    assert await formatter.split_into_paragraphs("") == ""
+    assert await formatter.split_into_paragraphs("   ") == "   "
+    create.assert_not_awaited()

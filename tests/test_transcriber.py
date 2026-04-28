@@ -46,6 +46,13 @@ def _silence_analyze(monkeypatch):
     monkeypatch.setattr(transcriber_module, "analyze_transcript", _no_analyze)
 
 
+@pytest.fixture(autouse=True)
+def _silence_split(monkeypatch):
+    async def _no_split(text: str) -> str:
+        return text
+    monkeypatch.setattr(transcriber_module, "split_into_paragraphs", _no_split)
+
+
 @pytest.fixture
 def fake_polling(monkeypatch):
     """Patch submit + get_transcript for polling-based transcription.
@@ -252,6 +259,33 @@ async def test_transcribe_progress_fraction_called(tmp_path, fake_polling):
     )
 
     assert fractions[-1] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_transcribe_single_speaker_calls_split_when_no_paragraphs(tmp_path, fake_polling, monkeypatch):
+    """split_into_paragraphs is called for a single long utterance; skipped when \n\n present."""
+    _submit_calls, holder = fake_polling
+    long_text = "Слово " * 60  # 360 chars, no \n\n
+    holder["statuses"] = [_make_status("completed", [_utt("A", long_text.strip())])]
+
+    split_calls: list[str] = []
+
+    async def _track_split(text: str) -> str:
+        split_calls.append(text)
+        return text
+
+    monkeypatch.setattr(transcriber_module, "split_into_paragraphs", _track_split)
+
+    await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
+    assert len(split_calls) == 1
+
+    # Multiple utterances → already has \n\n → split not called
+    split_calls.clear()
+    holder["statuses"] = [_make_status("completed", [_utt("A", "Первый."), _utt("A", "Второй.")])]
+    monkeypatch.setattr(transcriber_module, "split_into_paragraphs", _track_split)
+
+    await transcriber_module.transcribe(str(tmp_path / "b.mp3"))
+    assert len(split_calls) == 0
 
 
 @pytest.mark.asyncio

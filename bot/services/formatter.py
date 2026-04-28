@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Optional
 from openai import AsyncOpenAI
 
 from bot.config import settings
-from bot.services.prompts import ANALYSIS_SYSTEM_PROMPT
+from bot.services.prompts import ANALYSIS_SYSTEM_PROMPT, PARAGRAPH_SPLIT_SYSTEM_PROMPT
 
 if TYPE_CHECKING:
     from bot.services.transcriber import Utterance
@@ -24,6 +24,9 @@ client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 ANALYSIS_MAX_INPUT_CHARS = 20_000  # ~8K tokens for Russian; stays under 30K TPM limit
 ANALYSIS_MAX_TOKENS = 200
+
+PARA_SPLIT_THRESHOLD = 300  # chars; shorter single-speaker texts are fine as-is
+PARA_SPLIT_MAX_INPUT = 20_000
 
 _LABELED_BLOCK_RE = re.compile(r"^([^\n:]{1,40}?):\s(.*)", re.DOTALL | re.UNICODE)
 
@@ -144,3 +147,27 @@ async def analyze_transcript(
     except Exception:
         logger.warning("analyze_transcript failed", exc_info=True)
         return "", {}
+
+
+async def split_into_paragraphs(text: str) -> str:
+    """Split single-speaker solid text into semantic paragraphs via GPT.
+
+    Returns the original text unchanged on any failure.
+    """
+    if not text.strip():
+        return text
+    truncated = text[:PARA_SPLIT_MAX_INPUT]
+    try:
+        response = await client.chat.completions.create(
+            model=settings.GPT_MODEL,
+            messages=[
+                {"role": "system", "content": PARAGRAPH_SPLIT_SYSTEM_PROMPT},
+                {"role": "user", "content": truncated},
+            ],
+            temperature=0.0,
+        )
+        result = (response.choices[0].message.content or "").strip()
+        return result or text
+    except Exception:
+        logger.warning("split_into_paragraphs failed", exc_info=True)
+        return text

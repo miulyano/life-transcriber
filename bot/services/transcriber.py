@@ -18,7 +18,12 @@ import assemblyai as aai
 from assemblyai import api as _aai_api
 
 from bot.config import settings
-from bot.services.formatter import analyze_transcript, render_with_speakers
+from bot.services.formatter import (
+    PARA_SPLIT_THRESHOLD,
+    analyze_transcript,
+    render_with_speakers,
+    split_into_paragraphs,
+)
 from bot.services.word_boost import (
     apply_custom_spelling,
     load_custom_spelling,
@@ -181,6 +186,8 @@ async def _transcribe_inner(
             title = (filename_hint or "").strip()
 
     body_text = render_with_speakers(utterances, name_map) if utterances else raw_text
+    if speaker_count == 1 and "\n\n" not in body_text and len(body_text) > PARA_SPLIT_THRESHOLD:
+        body_text = await split_into_paragraphs(body_text)
     body = f"{title}\n\n{body_text}".strip() if title else body_text
     language = getattr(transcript, "language_code", None) or settings.FORCE_LANGUAGE_CODE
     return FormattedTranscript(

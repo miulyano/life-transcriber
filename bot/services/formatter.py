@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 
 from bot.config import settings
 from bot.services.prompts import ANALYSIS_SYSTEM_PROMPT, PARAGRAPH_SPLIT_SYSTEM_PROMPT
+from bot.utils.text_chunking import SENTENCE_BOUNDARIES, split_long_text
 
 if TYPE_CHECKING:
     from bot.services.transcriber import Utterance
@@ -149,32 +150,35 @@ async def analyze_transcript(
         return "", {}
 
 
-async def split_into_paragraphs(text: str) -> str:
-    """Split single-speaker solid text into semantic paragraphs via GPT.
-
-    Returns the original text unchanged on any failure.
-    """
-    if not text.strip():
-        return text
-    truncated = text[:PARA_SPLIT_MAX_INPUT]
-    remainder = text[PARA_SPLIT_MAX_INPUT:]
-    # Output is the same text with \n\n added — budget ≈ input size.
-    # Russian: ~3 chars/token; +20% headroom for paragraph breaks.
-    max_tokens = min(16384, int(len(truncated) / 3 * 1.2) + 200)
+async def _split_chunk(chunk: str) -> str:
+    """GPT paragraph split for a single chunk. Returns chunk unchanged on failure."""
+    # Output ≈ same size as input; Russian ~3 chars/token, +20% headroom.
+    max_tokens = min(16384, int(len(chunk) / 3 * 1.2) + 200)
     try:
         response = await client.chat.completions.create(
             model=settings.GPT_MODEL,
             messages=[
                 {"role": "system", "content": PARAGRAPH_SPLIT_SYSTEM_PROMPT},
-                {"role": "user", "content": truncated},
+                {"role": "user", "content": chunk},
             ],
             temperature=0.0,
             max_tokens=max_tokens,
         )
-        result = (response.choices[0].message.content or "").strip()
-        if not result:
-            return text
-        return result if not remainder else result + "\n\n" + remainder
+        return (response.choices[0].message.content or "").strip() or chunk
     except Exception:
-        logger.warning("split_into_paragraphs failed", exc_info=True)
+        logger.warning("_split_chunk failed", exc_info=True)
+        return chunk
+
+
+async def split_into_paragraphs(text: str) -> str:
+    """Split single-speaker solid text into semantic paragraphs via GPT.
+
+    Long texts are processed chunk-by-chunk so the entire text is formatted,
+    not just the first PARA_SPLIT_MAX_INPUT characters.
+    Returns the original text unchanged on any failure.
+    """
+    if not text.strip():
         return text
+    chunks = split_long_text(text, PARA_SPLIT_MAX_INPUT, prefer_boundaries=SENTENCE_BOUNDARIES)
+    results = [await _split_chunk(chunk) for chunk in chunks]
+    return "\n\n".join(results)

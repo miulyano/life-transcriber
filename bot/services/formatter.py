@@ -157,6 +157,9 @@ async def split_into_paragraphs(text: str) -> str:
     if not text.strip():
         return text
     truncated = text[:PARA_SPLIT_MAX_INPUT]
+    # Output is the same text with \n\n added — budget ≈ input size.
+    # Russian: ~3 chars/token; +20% headroom for paragraph breaks.
+    max_tokens = min(16384, int(len(truncated) / 3 * 1.2) + 200)
     try:
         response = await client.chat.completions.create(
             model=settings.GPT_MODEL,
@@ -165,6 +168,7 @@ async def split_into_paragraphs(text: str) -> str:
                 {"role": "user", "content": truncated},
             ],
             temperature=0.0,
+            max_tokens=max_tokens,
         )
         result = (response.choices[0].message.content or "").strip()
         return result or text

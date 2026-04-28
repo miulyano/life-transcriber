@@ -246,18 +246,18 @@ async def test_split_into_paragraphs_returns_original_on_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_split_into_paragraphs_appends_remainder_beyond_limit(monkeypatch):
-    """Text beyond PARA_SPLIT_MAX_INPUT must not be dropped."""
-    gpt_result = "Первый абзац.\n\nВторой абзац."
-    create = AsyncMock(return_value=_response(gpt_result))
+async def test_split_into_paragraphs_processes_all_chunks_for_long_text(monkeypatch):
+    """Every chunk of a long text must be sent to GPT — nothing dropped."""
+    create = AsyncMock(side_effect=[_response("Часть 1."), _response("Часть 2.")])
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    tail = "Хвост за пределами лимита."
-    long_input = "А" * formatter.PARA_SPLIT_MAX_INPUT + tail
-    result = await formatter.split_into_paragraphs(long_input)
+    # Text with sentence boundaries, longer than PARA_SPLIT_MAX_INPUT
+    sentence = "Это предложение. " * (formatter.PARA_SPLIT_MAX_INPUT // 17 + 10)
+    result = await formatter.split_into_paragraphs(sentence)
 
-    assert result.endswith(tail)
-    assert gpt_result in result
+    assert create.await_count >= 2
+    assert "Часть 1." in result
+    assert "Часть 2." in result
 
 
 @pytest.mark.asyncio

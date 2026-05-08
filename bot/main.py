@@ -6,7 +6,12 @@ from contextlib import suppress
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import MenuButtonDefault, MenuButtonWebApp, WebAppInfo
+from aiogram.types import (
+    BotCommand,
+    MenuButtonDefault,
+    MenuButtonWebApp,
+    WebAppInfo,
+)
 
 from bot.config import settings
 from bot.handlers import callbacks, commands, links, video, voice
@@ -41,6 +46,14 @@ async def main() -> None:
     dp.include_router(video.router)
     dp.include_router(links.router)
     dp.include_router(callbacks.router)
+
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="Описание бота"),
+            BotCommand(command="help", description="Описание бота"),
+            BotCommand(command="limit", description="Остаток лимита транскрибации"),
+        ]
+    )
 
     if settings.WEBAPP_URL:
         await bot.set_chat_menu_button(

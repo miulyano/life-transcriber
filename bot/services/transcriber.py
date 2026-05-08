@@ -52,6 +52,7 @@ class FormattedTranscript:
     raw_text: str  # AssemblyAI text after custom_spelling, no speaker prefixes
     language: Optional[str]
     speaker_count: int
+    audio_duration_sec: float = 0.0
 
 
 # Loaded once at import — restart the bot to pick up edits to the data files.
@@ -190,10 +191,12 @@ async def _transcribe_inner(
         body_text = await split_into_paragraphs(body_text)
     body = f"{title}\n\n{body_text}".strip() if title else body_text
     language = getattr(transcript, "language_code", None) or settings.FORCE_LANGUAGE_CODE
+    audio_duration_sec = float(getattr(transcript, "audio_duration", 0) or 0)
     return FormattedTranscript(
         title=title,
         body=body,
         raw_text=raw_text,
         language=language,
         speaker_count=speaker_count,
+        audio_duration_sec=audio_duration_sec,
     )

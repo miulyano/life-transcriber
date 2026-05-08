@@ -40,8 +40,8 @@ async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
         audio_path.write_bytes(b"audio")
         return str(audio_path)
 
-    async def fake_pipeline(audio_path, *, reporter, deliver_text, filename_hint=None, on_phase_change=None):
-        events.append(("pipeline", audio_path, filename_hint))
+    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, filename_hint=None, on_phase_change=None):
+        events.append(("pipeline", audio_path, user_id, filename_hint))
         await reporter.set_phase("Форматирую…")
         await reporter.set_phase("Отправляю результат…")
         await deliver_text("transcript")
@@ -58,6 +58,7 @@ async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
     bot = MagicMock()
     bot.download = AsyncMock(side_effect=fake_download)
     message = MagicMock()
+    message.from_user.id = 333
 
     await _tg_media.process_tg_media(
         message, bot, "file-id", ".mp4", label="Скачиваю видео из Telegram…", extract_audio_first=True

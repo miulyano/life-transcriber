@@ -18,6 +18,7 @@ from bot.config import settings
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 from bot.services.transcription_pipeline import run_transcription_pipeline
+from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
@@ -101,13 +102,18 @@ async def _process_upload(
                 async def deliver_text(text: str) -> None:
                     await send_transcript_to_chat(bot, user_id, text)
 
-                await run_transcription_pipeline(
-                    audio_path,
-                    reporter=reporter,
-                    deliver_text=deliver_text,
-                    filename_hint=filename_hint,
-                    on_phase_change=on_phase_change,
-                )
+                try:
+                    await run_transcription_pipeline(
+                        audio_path,
+                        reporter=reporter,
+                        deliver_text=deliver_text,
+                        user_id=user_id,
+                        filename_hint=filename_hint,
+                        on_phase_change=on_phase_change,
+                    )
+                except LimitExceededError as exc:
+                    await reporter.fail(format_limit_exceeded_message(exc.limit_hours))
+                    return
                 now = time.monotonic()
                 transcribe_seconds = timings.get(
                     "transcribe_seconds",

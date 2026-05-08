@@ -8,6 +8,7 @@ services:
     volumes:
       - transcriber_tmp:/tmp/transcriber
       - ./bot/data:/app/bot/data:ro
+      - ./data:/app/data
     deploy:
       resources:
         limits:
@@ -35,6 +36,8 @@ services:
     restart: unless-stopped
     volumes:
       - webapp_tmp:/tmp/transcriber
+      - ./bot/data:/app/bot/data:ro
+      - ./data:/app/data
     networks:
       - default
       - caddy_net

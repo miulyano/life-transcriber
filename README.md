@@ -35,6 +35,12 @@ Universal-2 (с акустической диаризацией спикеров
 
 **Доступ:** по whitelist Telegram user ID. Случайные пользователи не получают ответа.
 
+**Команды бота:**
+- `/start`, `/help` — приветствие со списком поддерживаемых входов, описанием лимитов и доступных команд
+- `/limit` — показать текущий месячный лимит транскрибации, использовано и остаток. Для пользователей без лимита отвечает «Лимит на транскрибации не установлен.»
+
+**Месячные лимиты часов транскрибации (опционально):** для конкретных пользователей можно задать месячный лимит в часах. Лимиты живут в `bot/data/user_limits.json` (формат `{"<telegram_user_id>": <hours>}`). Расход считается по календарным месяцам UTC и сохраняется в `data/usage.json` (writable volume). Пользователи без записи в `user_limits.json` имеют безлимит. При превышении лимита бот отвечает: «Превышен текущий лимит по часам транскрибации в месяц. Ваш текущий лимит — N часов.» (с правильной плюрализацией). Списание идёт по фактическому duration аудио из ответа AssemblyAI после успешной транскрибации, поэтому в последнем запросе возможен небольшой перерасход — следующий запрос будет заблокирован.
+
 ## Ориентировочная стоимость
 
 Все расходы идут напрямую на твои API-аккаунты. Ориентир за **1 час аудио/видео**:
@@ -338,6 +344,7 @@ life-transcriber/
 │   │   ├── voice.py             # voice + video_note (кружочки)
 │   │   ├── video.py             # видео-файлы и document/video
 │   │   ├── links.py             # URL → yt-dlp → transcribe
+│   │   ├── commands.py          # /start, /limit
 │   │   └── callbacks.py         # кнопки «Краткий конспект» и «Скопировать»
 │   ├── services/
 │   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript
@@ -352,18 +359,22 @@ life-transcriber/
 │   │   ├── media.py             # Подготовка audio-only MP3 через FFmpeg
 │   │   ├── stream_download.py   # Общая потоковая запись HTTP-скачиваний во временный файл
 │   │   ├── word_boost.py        # load_word_boost / load_custom_spelling / apply_custom_spelling
-│   │   ├── transcription_pipeline.py # Общий flow: transcribe → deliver
+│   │   ├── transcription_pipeline.py # Общий flow: pre-check лимита → transcribe → списание расхода → deliver
+│   │   ├── usage_store.py       # Per-user месячные лимиты часов + расход (JSON-стор)
 │   │   ├── temp_cleanup.py      # Периодическая очистка старых файлов из TEMP_DIR
 │   │   ├── user_facing_error.py # Типизированные provider-ошибки без потери старого текста
 │   │   └── downloader.py        # Диспетчер: Яндекс Диск / Instagram / Facebook / Яндекс Музыка / yt-dlp + FFmpeg
 │   ├── data/
 │   │   ├── word_boost.txt       # доменные термины для AssemblyAI word_boost (по одному на строку)
-│   │   └── custom_spelling.json # JSON-карта для пост-замен в тексте
+│   │   ├── custom_spelling.json # JSON-карта для пост-замен в тексте
+│   │   ├── user_limits.example.json # Пример формата лимитов часов
+│   │   └── user_limits.json     # (gitignored) per-user лимиты часов в месяц
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
 │   └── utils/
 │       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин
 │       ├── text_chunking.py     # split_long_text: общий чанкер для summarizer/formatter
 │       ├── fake_progress.py     # ровный прогресс-бар для операций без реального сигнала
+│       ├── pluralize.py         # plural_ru, format_hm для русских числительных
 │       └── progress.py          # ProgressReporter: один статус с анимированным баром
 ├── webapp/                      # Telegram Mini App (FastAPI)
 │   ├── main.py                  # FastAPI app; POST /api/upload; static mount
@@ -373,6 +384,7 @@ life-transcriber/
 │   └── static/
 │       ├── index.html           # TWA UI с tg-theme CSS vars
 │       └── app.js               # fetch upload + Telegram.WebApp.close()
+├── data/                        # (gitignored) writable runtime state: usage.json
 ├── tests/                       # pytest
 ├── Dockerfile                   # для bot-сервиса
 ├── docker-compose.yml           # сервисы: bot, cobalt, webapp

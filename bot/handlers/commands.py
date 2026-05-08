@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram import Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.services.usage_store import UsageStore, get_store
@@ -10,19 +10,34 @@ from bot.utils.pluralize import format_hm, plural_ru
 router = Router()
 
 
-START_TEXT = (
-    "Привет! Я транскрибирую голосовые, кружочки, видео, аудиофайлы "
-    "и ссылки на ролики (YouTube, Instagram, TikTok, Yandex Music, "
-    "Facebook и др.).\n"
+WELCOME_TEXT = (
+    "👋 Привет! Я транскрибирую аудио и видео в текст.\n"
     "\n"
-    "Пришли мне:\n"
-    "• голосовое сообщение или видео-кружок\n"
-    "• видео или аудиофайл\n"
-    "• ссылку на ролик из поддерживаемого источника\n"
+    "<b>Что умею:</b>\n"
+    "🎙 Голосовые сообщения\n"
+    "🎥 Видео-кружочки\n"
+    "📼 Видео-файлы (.mp4, .mov и т.п., в том числе пересланные)\n"
+    "🔗 Ссылки на видео — YouTube, RuTube, VK Video, Vimeo и др.\n"
+    "📸 Instagram Reels и видео (публичные)\n"
+    "📘 Публичные видео и Reels Facebook\n"
+    "☁️ Публичные ссылки на Яндекс Диск (аудио/видео)\n"
+    "🎧 Выпуски подкастов Яндекс Музыки\n"
     "\n"
-    "Доступные команды:\n"
-    "/start — это сообщение\n"
-    "/limit — узнать остаток месячного лимита транскрибации"
+    "<b>Лимиты:</b>\n"
+    "Через скрепку — до 20 MB (ограничение Telegram).\n"
+    "Больше — через Mini App (кнопка 📤 слева от поля ввода).\n"
+    "\n"
+    "<b>Как пользоваться:</b>\n"
+    "Просто пришли файл или ссылку — в ответ получишь текст.\n"
+    "\n"
+    "<b>После транскрибации</b> под сообщением появятся кнопки:\n"
+    "📋 Скопировать текст\n"
+    "📝 Краткий конспект\n"
+    "🧹 Очистить текст от слов-паразитов\n"
+    "\n"
+    "<b>Команды:</b>\n"
+    "/start, /help — это сообщение\n"
+    "/limit — остаток месячного лимита транскрибации"
 )
 
 
@@ -40,9 +55,9 @@ def _format_limit_status(limit_hours: int, used_seconds: float, remaining_second
     )
 
 
-@router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
-    await message.answer(START_TEXT)
+@router.message(Command("start", "help"))
+async def handle_start(message: Message) -> None:
+    await message.answer(WELCOME_TEXT)
 
 
 async def _build_limit_text(user_id: int, store: UsageStore) -> str:

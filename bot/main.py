@@ -50,6 +50,7 @@ async def main() -> None:
     await bot.set_my_commands(
         [
             BotCommand(command="start", description="Описание бота"),
+            BotCommand(command="help", description="Описание бота"),
             BotCommand(command="limit", description="Остаток лимита транскрибации"),
         ]
     )

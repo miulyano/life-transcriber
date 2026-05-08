@@ -1,8 +1,9 @@
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bot.handlers.commands import START_TEXT, _build_limit_text
+from bot.handlers.commands import WELCOME_TEXT, _build_limit_text, handle_start
 from bot.services.usage_store import UsageStore
 
 
@@ -14,10 +15,32 @@ def tmp_paths(tmp_path):
     }
 
 
-def test_start_text_contains_commands_block():
-    assert "/start" in START_TEXT
-    assert "/limit" in START_TEXT
-    assert "Доступные команды:" in START_TEXT
+def test_welcome_text_mentions_key_features():
+    assert "Голосовые" in WELCOME_TEXT
+    assert "20 MB" in WELCOME_TEXT
+    assert "Mini App" in WELCOME_TEXT
+    assert "YouTube" in WELCOME_TEXT
+    assert "Яндекс Диск" in WELCOME_TEXT
+
+
+def test_welcome_text_uses_html_bold():
+    assert "<b>" in WELCOME_TEXT and "</b>" in WELCOME_TEXT
+
+
+def test_welcome_text_lists_commands():
+    assert "/start" in WELCOME_TEXT
+    assert "/help" in WELCOME_TEXT
+    assert "/limit" in WELCOME_TEXT
+    assert "Команды:" in WELCOME_TEXT
+
+
+async def test_handle_start_sends_welcome():
+    message = MagicMock()
+    message.answer = AsyncMock()
+
+    await handle_start(message)
+
+    message.answer.assert_awaited_once_with(WELCOME_TEXT)
 
 
 @pytest.mark.asyncio

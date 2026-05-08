@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Команды `/start` и `/help` — приветственное сообщение со списком поддерживаемых входов и описанием лимитов
+
 ## [1.0.0] – 2026-04-28
 
 ### Added

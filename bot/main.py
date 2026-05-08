@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import MenuButtonDefault, MenuButtonWebApp, WebAppInfo
 
 from bot.config import settings
-from bot.handlers import callbacks, links, video, voice
+from bot.handlers import callbacks, commands, links, video, voice
 from bot.middlewares.auth import AuthMiddleware
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 
@@ -36,6 +36,7 @@ async def main() -> None:
 
     dp.message.middleware(AuthMiddleware())
 
+    dp.include_router(commands.router)
     dp.include_router(voice.router)
     dp.include_router(video.router)
     dp.include_router(links.router)

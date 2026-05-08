@@ -10,6 +10,7 @@ from bot.config import settings
 from bot.services.downloader import download_audio
 from bot.services.error_messages import format_download_error
 from bot.services.transcription_pipeline import run_transcription_pipeline
+from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
 
@@ -26,9 +27,11 @@ async def handle_link(message: Message) -> None:
     urls = URL_RE.findall(message.text)
     url = urls[0]
 
+    user_id = message.from_user.id if message.from_user else 0
     audio_path: str | None = None
     source_title: str | None = None
     async with ProgressReporter(message, "Скачиваю аудио по ссылке…") as reporter:
+        limit_exceeded: LimitExceededError | None = None
         try:
             try:
                 audio_path, source_title = await download_audio(url, settings.TEMP_DIR)
@@ -40,13 +43,20 @@ async def handle_link(message: Message) -> None:
             async def deliver_text(text: str) -> None:
                 await reply_text_or_file(message, text)
 
-            await run_transcription_pipeline(
-                audio_path,
-                reporter=reporter,
-                deliver_text=deliver_text,
-                filename_hint=source_title,
-            )
+            try:
+                await run_transcription_pipeline(
+                    audio_path,
+                    reporter=reporter,
+                    deliver_text=deliver_text,
+                    user_id=user_id,
+                    filename_hint=source_title,
+                )
+            except LimitExceededError as exc:
+                limit_exceeded = exc
         finally:
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
-        await reporter.finish()
+        if limit_exceeded is not None:
+            await reporter.fail(format_limit_exceeded_message(limit_exceeded.limit_hours))
+        else:
+            await reporter.finish()

@@ -34,8 +34,8 @@ async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
         events.append(("download", destination))
         Path(destination).write_bytes(b"voice")
 
-    async def fake_pipeline(audio_path, *, reporter, deliver_text, filename_hint=None, on_phase_change=None):
-        events.append(("pipeline", audio_path, filename_hint))
+    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, filename_hint=None, on_phase_change=None):
+        events.append(("pipeline", audio_path, user_id, filename_hint))
         await deliver_text("transcript")
 
     async def fake_reply_text_or_file(_message, text):
@@ -49,6 +49,7 @@ async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
     bot = MagicMock()
     bot.download = AsyncMock(side_effect=fake_download)
     message = MagicMock()
+    message.from_user.id = 555
 
     await _tg_media.process_tg_media(message, bot, "file-id", ".ogg", label="Транскрибирую…")
 
@@ -58,4 +59,5 @@ async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
         if isinstance(event, tuple) and event[0] == "pipeline"
     )
     assert pipeline_event[1].endswith(".ogg")
+    assert pipeline_event[2] == 555
     assert events.index(("reply", "transcript")) < events.index("finish")

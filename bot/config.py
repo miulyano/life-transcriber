@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     YTDLP_PROXY: Optional[str] = None
     YANDEX_MUSIC_PROXY: Optional[str] = None
     WEBAPP_URL: Optional[str] = None  # https://transcriber.<domain> — enables bot menu button
+    LIMITS_FILE: str = "bot/data/user_limits.json"
+    USAGE_FILE: str = "data/usage.json"
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:

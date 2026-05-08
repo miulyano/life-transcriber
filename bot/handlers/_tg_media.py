@@ -9,6 +9,7 @@ from aiogram.types import Message
 from bot.config import settings
 from bot.services.downloader import extract_audio
 from bot.services.transcription_pipeline import run_transcription_pipeline
+from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
 
@@ -31,9 +32,11 @@ async def process_tg_media(
     filename_hint: str | None = None,
 ) -> None:
     """Download a Telegram file, optionally extract audio, then transcribe."""
+    user_id = message.from_user.id if message.from_user else 0
     async with ProgressReporter(message, label) as reporter:
         media_path = await download_tg_file(bot, file_id, suffix)
         audio_path: str | None = None
+        limit_exceeded: LimitExceededError | None = None
         try:
             if extract_audio_first:
                 await reporter.set_phase("Извлекаю аудио…")
@@ -46,15 +49,22 @@ async def process_tg_media(
             async def deliver_text(text: str) -> None:
                 await reply_text_or_file(message, text)
 
-            await run_transcription_pipeline(
-                transcribe_path,
-                reporter=reporter,
-                deliver_text=deliver_text,
-                filename_hint=filename_hint,
-            )
+            try:
+                await run_transcription_pipeline(
+                    transcribe_path,
+                    reporter=reporter,
+                    deliver_text=deliver_text,
+                    user_id=user_id,
+                    filename_hint=filename_hint,
+                )
+            except LimitExceededError as exc:
+                limit_exceeded = exc
         finally:
             if os.path.exists(media_path):
                 os.unlink(media_path)
             if audio_path and os.path.exists(audio_path):
                 os.unlink(audio_path)
-        await reporter.finish()
+        if limit_exceeded is not None:
+            await reporter.fail(format_limit_exceeded_message(limit_exceeded.limit_hours))
+        else:
+            await reporter.finish()

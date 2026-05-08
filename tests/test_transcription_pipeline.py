@@ -20,9 +20,25 @@ class _Reporter:
         self.events.append(("fraction", fraction))
 
 
-def _result(body="formatted body", title="T", raw="raw"):
+class _NoLimitStore:
+    def __init__(self):
+        self.commits: list[tuple[int, float]] = []
+
+    async def assert_within_limit(self, user_id: int) -> None:
+        return None
+
+    async def add_seconds(self, user_id: int, seconds: float) -> None:
+        self.commits.append((user_id, seconds))
+
+
+def _result(body="formatted body", title="T", raw="raw", duration=42.0):
     return FormattedTranscript(
-        title=title, body=body, raw_text=raw, language="ru", speaker_count=2
+        title=title,
+        body=body,
+        raw_text=raw,
+        language="ru",
+        speaker_count=2,
+        audio_duration_sec=duration,
     )
 
 
@@ -43,12 +59,15 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
 
     monkeypatch.setattr(pipeline_module, "transcribe", fake_transcribe)
 
+    store = _NoLimitStore()
     await pipeline_module.run_transcription_pipeline(
         "/tmp/audio.mp3",
         reporter=reporter,
         deliver_text=fake_deliver,
+        user_id=111,
         filename_hint="title hint",
         on_phase_change=fake_phase_change,
+        usage_store=store,
     )
 
     assert events == [
@@ -59,6 +78,7 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
     assert reporter.events == [
         ("phase", "Отправляю результат…"),
     ]
+    assert store.commits == [(111, 42.0)]
 
 
 @pytest.mark.asyncio
@@ -72,6 +92,8 @@ async def test_pipeline_passes_none_filename_hint(monkeypatch):
         "/tmp/audio.mp3",
         reporter=reporter,
         deliver_text=AsyncMock(),
+        user_id=111,
+        usage_store=_NoLimitStore(),
     )
 
     assert transcribe_mock.await_args.kwargs["filename_hint"] is None

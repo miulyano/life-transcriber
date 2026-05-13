@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.constants import TELEGRAM_TEXT_LIMIT
 from bot.services.summarizer import cleanup_transcript, summarize
-from bot.utils.filename import build_filename, extract_title
+from bot.utils.filename import build_filename, extract_title, split_header_and_body
 from bot.utils.markdown import markdown_to_telegram_html
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import _store_text, get_cached_text
@@ -38,26 +38,6 @@ async def _resolve_text(callback: CallbackQuery, text_hash: str) -> Optional[str
     return text
 
 
-def _ensure_title_in_cleaned(cleaned: str, original_title: Optional[str]) -> str:
-    """Prepend ``original_title`` if the cleanup model didn't preserve it verbatim.
-
-    Earlier versions tried to detect a "paraphrased" first line and drop it
-    from the body. That heuristic (short + no speaker colon) matched plain
-    first-paragraph content far more often than real paraphrased titles and
-    silently deleted the opening of long transcripts. Safer rule: only treat
-    a verbatim match as "title already present"; otherwise prepend the
-    original and keep the full cleaned body intact. Worst case this yields a
-    visible near-duplicate (original title + paraphrased first line) — much
-    better than a silently missing paragraph.
-    """
-    if not original_title:
-        return cleaned
-    cleaned_first_line = extract_title(cleaned) or ""
-    if cleaned_first_line == original_title:
-        return cleaned
-    return f"{original_title}\n\n{cleaned.lstrip()}"
-
-
 @router.callback_query(F.data.startswith("summary:"))
 async def handle_summary(callback: CallbackQuery) -> None:
     text_hash = callback.data.split(":", 1)[1]
@@ -72,7 +52,9 @@ async def handle_summary(callback: CallbackQuery) -> None:
 
     await callback.answer()
     async with ProgressReporter(callback.message, "Делаю краткий конспект…") as reporter:
-        summary = await summarize(text, on_progress=reporter.set_progress)
+        _header, body = split_header_and_body(text)
+        summary_input = body or text
+        summary = await summarize(summary_input, on_progress=reporter.set_progress)
         await reporter.set_phase("Отправляю результат…")
         body = markdown_to_telegram_html(summary)
         message = f"📝 Краткий конспект:\n\n{body}"
@@ -111,11 +93,19 @@ async def handle_cleanup(callback: CallbackQuery) -> None:
 
     await callback.answer()
     async with ProgressReporter(callback.message, "Очищаю текст…") as reporter:
-        cleaned = await cleanup_transcript(text, on_progress=reporter.set_progress)
+        header, body = split_header_and_body(text)
+        cleanup_input = body or text
+        cleaned_body = await cleanup_transcript(
+            cleanup_input, on_progress=reporter.set_progress
+        )
         await reporter.set_phase("Отправляю результат…")
 
+        if header and body:
+            final_text = f"{header}\n\n{cleaned_body.lstrip()}"
+        else:
+            final_text = cleaned_body
+
         original_title = extract_title(text)
-        cleaned_with_title = _ensure_title_in_cleaned(cleaned, original_title)
         filename = build_filename(
             f"{original_title} clean" if original_title else "clean transcript",
         )
@@ -125,7 +115,7 @@ async def handle_cleanup(callback: CallbackQuery) -> None:
             else "Очищенный текст"
         )
         await callback.message.reply_document(
-            BufferedInputFile(cleaned_with_title.encode("utf-8"), filename=filename),
+            BufferedInputFile(final_text.encode("utf-8"), filename=filename),
             caption=caption,
         )
         await reporter.finish()

@@ -1,6 +1,6 @@
 import pytest
 
-from bot.utils.filename import build_filename, extract_title
+from bot.utils.filename import build_filename, extract_title, split_header_and_body
 
 
 def test_cyrillic_transliterated_and_slugified():
@@ -54,3 +54,27 @@ def test_extract_title_skips_blank_lines():
 def test_extract_title_empty():
     assert extract_title("") is None
     assert extract_title("\n\n\n") is None
+
+
+def test_split_header_and_body_with_channel():
+    header, body = split_header_and_body(
+        "Заголовок\n📺 Канал: ШАД\n\nСпикер 1: реплика.\n\nСпикер 2: ответ."
+    )
+    assert header == "Заголовок\n📺 Канал: ШАД"
+    assert body == "Спикер 1: реплика.\n\nСпикер 2: ответ."
+
+
+def test_split_header_and_body_without_channel():
+    header, body = split_header_and_body("Заголовок\n\nтело.")
+    assert header == "Заголовок"
+    assert body == "тело."
+
+
+def test_split_header_and_body_no_blank_separator():
+    header, body = split_header_and_body("сплошной текст без шапки")
+    assert header == "сплошной текст без шапки"
+    assert body == ""
+
+
+def test_split_header_and_body_empty():
+    assert split_header_and_body("") == ("", "")

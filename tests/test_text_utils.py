@@ -120,7 +120,7 @@ async def test_short_text_sent_inline():
 
     message.reply.assert_awaited_once()
     message.reply_document.assert_not_called()
-    # Check text passed as first positional arg
+    # Header-less text (no \n\n) — sent as plain (HTML-escaped), no <b> wrap.
     assert message.reply.await_args.args[0] == short_text
 
 
@@ -164,8 +164,8 @@ async def test_threshold_boundary_file():
     message.reply.assert_not_called()
 
 
-async def test_long_text_caption_includes_channel_line():
-    """Document caption must include the 'Канал: ...' header line, not just the title."""
+async def test_long_text_caption_html_formats_title_and_channel():
+    """Caption uses HTML: <b>title</b> + <i>📺 Канал: …</i>."""
     message = MagicMock()
     message.reply = AsyncMock()
     message.reply_document = AsyncMock()
@@ -173,16 +173,15 @@ async def test_long_text_caption_includes_channel_line():
     title = "Подкаст про AI"
     uploader = "ШАД"
     body_text = "x" * 3000  # > LONG_TEXT_THRESHOLD → file
-    full = f"{title}\nКанал: {uploader}\n\n{body_text}"
+    full = f"{title}\n📺 Канал: {uploader}\n\n{body_text}"
     await reply_text_or_file(message, full)
 
     caption = message.reply_document.await_args.kwargs["caption"]
-    assert title in caption
-    assert f"Канал: {uploader}" in caption
+    assert caption == f"<b>{title}</b>\n<i>📺 Канал: {uploader}</i>"
 
 
 async def test_long_text_caption_without_channel():
-    """When there is no 'Канал:' line, caption is just the title."""
+    """When there is no 'Канал:' line, caption is just the bold title."""
     message = MagicMock()
     message.reply = AsyncMock()
     message.reply_document = AsyncMock()
@@ -193,11 +192,11 @@ async def test_long_text_caption_without_channel():
     await reply_text_or_file(message, full)
 
     caption = message.reply_document.await_args.kwargs["caption"]
-    assert caption == title
+    assert caption == f"<b>{title}</b>"
 
 
 async def test_long_text_caption_truncated_when_too_long():
-    """Caption longer than Telegram limit (1024) is truncated with an ellipsis."""
+    """Caption header longer than Telegram limit (1024) is truncated before HTML wrap."""
     message = MagicMock()
     message.reply = AsyncMock()
     message.reply_document = AsyncMock()
@@ -208,8 +207,43 @@ async def test_long_text_caption_truncated_when_too_long():
     await reply_text_or_file(message, full)
 
     caption = message.reply_document.await_args.kwargs["caption"]
-    assert len(caption) <= 1024
-    assert caption.endswith("…")
+    # Visible text (without HTML tags) must stay within Telegram's caption limit.
+    visible = caption.replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", "")
+    assert len(visible) <= 1024
+    assert visible.endswith("…")
+
+
+async def test_caption_and_body_escape_html_special_chars():
+    """Title/uploader/body with '<>&' must be HTML-escaped to avoid breaking entity parsing."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    body_text = "spkr: <hello> & <world>" + "x" * 3000
+    full = f"<title & more>\n📺 Канал: A&B <x>\n\n{body_text}"
+    await reply_text_or_file(message, full)
+
+    caption = message.reply_document.await_args.kwargs["caption"]
+    assert "&lt;title &amp; more&gt;" in caption
+    assert "&lt;x&gt;" in caption
+    # Tags themselves are not escaped — they remain valid HTML markup.
+    assert caption.startswith("<b>")
+    assert "</b>" in caption and "<i>" in caption
+
+
+async def test_inline_short_with_header_formats_html():
+    """Short text with header → inline reply with <b>title</b> + <i>📺 Канал: …</i> + body."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    full = "Заголовок\n📺 Канал: ШАД\n\nКороткий текст реплики."
+    await reply_text_or_file(message, full)
+
+    sent = message.reply.await_args.args[0]
+    assert sent == (
+        "<b>Заголовок</b>\n<i>📺 Канал: ШАД</i>\n\nКороткий текст реплики."
+    )
 
 
 async def test_reply_caches_text_via_copy_button():

@@ -67,16 +67,19 @@ def extract_title(text: str) -> str | None:
     return None
 
 
-def extract_caption(text: str) -> str | None:
-    """Return the header block of a formatted transcript (text before the first
-    blank line). Used as the Telegram document caption — includes the title and,
-    when present, the ``Канал: …`` line.
+def split_header_and_body(text: str) -> tuple[str, str]:
+    """Split a formatted transcript into ``(header, body)`` by the first blank line.
+
+    Header — everything up to the first ``\\n\\n`` (title and the optional
+    ``📺 Канал: …`` line).  Body — everything after, with whitespace stripped.
+    If there is no blank-line separator, the whole text is treated as header
+    and body is empty.
     """
-    lines: list[str] = []
-    for line in text.splitlines():
-        if line.strip():
-            lines.append(line.strip())
-        elif lines:
-            break
-    caption = "\n".join(lines).strip()
-    return caption or None
+    if not text:
+        return "", ""
+    parts = text.split("\n\n", 1)
+    if len(parts) == 1:
+        return text.strip(), ""
+    return parts[0].strip(), parts[1].strip()
+
+

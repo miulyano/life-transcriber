@@ -227,9 +227,9 @@ async def test_transcribe_prefers_original_source_title_over_gpt(tmp_path, fake_
 
     assert result.title == "Подкаст про AI: как обучать модели"
     assert result.uploader == "ШАД"
-    # Body header: title + "Канал: ..." + blank line + body
+    # Body header: title + "📺 Канал: ..." + blank line + body
     assert result.body.startswith(
-        "Подкаст про AI: как обучать модели\nКанал: ШАД\n\n"
+        "Подкаст про AI: как обучать модели\n📺 Канал: ШАД\n\n"
     )
 
 

@@ -183,7 +183,7 @@ async def transcribe(
 
 def _build_header(title: str, uploader: Optional[str]) -> str:
     if title and uploader:
-        return f"{title}\nКанал: {uploader}"
+        return f"{title}\n📺 Канал: {uploader}"
     return title
 
 

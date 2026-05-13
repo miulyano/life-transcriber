@@ -5,7 +5,6 @@ import pytest
 from aiogram.types import InaccessibleMessage, Message
 
 from bot.handlers.callbacks import (
-    _ensure_title_in_cleaned,
     _extract_text_from_message,
     handle_cleanup,
     handle_summary,
@@ -209,7 +208,11 @@ async def test_handle_cleanup_from_cache():
         mock_cleanup.return_value = "Заголовок\n\nТестовый текст."
         await handle_cleanup(cb)
 
-    mock_cleanup.assert_awaited_once_with(source_text, on_progress=ANY)
+    # Cleanup receives only the body (no header) so the channel/title line
+    # can't be mistaken for a speaker reply.
+    mock_cleanup.assert_awaited_once_with(
+        "Ну это, в общем, тестовый текст.", on_progress=ANY
+    )
     cb.answer.assert_awaited_once_with()
     cb.message.reply_document.assert_awaited_once()
     caption = cb.message.reply_document.await_args.kwargs["caption"]
@@ -232,9 +235,7 @@ async def test_handle_cleanup_fallback_document():
         mock_cleanup.return_value = "Заголовок\n\nТекст."
         await handle_cleanup(cb)
 
-    mock_cleanup.assert_awaited_once_with(
-        "Заголовок\n\nНу это текст.", on_progress=ANY
-    )
+    mock_cleanup.assert_awaited_once_with("Ну это текст.", on_progress=ANY)
     cb.message.reply_document.assert_awaited_once()
 
 
@@ -287,50 +288,77 @@ async def test_handle_cleanup_file_starts_with_original_title_when_dropped():
     assert body.startswith("Настоящий заголовок\n\nТекст без мусора.")
 
 
-# ---------- _ensure_title_in_cleaned helper ----------
+# ---------- cleanup/summary: header is split off before LLM ----------
 
 
-def test_ensure_title_when_first_line_matches_returns_unchanged():
-    cleaned = "Заголовок\n\nтело текста."
-    assert _ensure_title_in_cleaned(cleaned, "Заголовок") == cleaned
+async def test_cleanup_strips_header_before_sending_to_gpt():
+    """Header (title + ``📺 Канал: …``) must NOT reach cleanup_transcript —
+    otherwise GPT mistakes the channel line for a speaker prefix and rewrites
+    the first speaker reply."""
+    source_text = (
+        "Реальный заголовок\n"
+        "📺 Канал: Куда расти?\n"
+        "\n"
+        "Спикер 1: реальная реплика."
+    )
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"cleanup:{h}"
+    cb.message.reply_document = AsyncMock()
 
+    with patch(
+        "bot.handlers.callbacks.cleanup_transcript", new_callable=AsyncMock
+    ) as mock_cleanup:
+        mock_cleanup.return_value = "Спикер 1: реальная реплика."
+        await handle_cleanup(cb)
 
-def test_ensure_title_when_first_line_paraphrased_prepends_without_dropping():
-    # Previously: the function tried to detect a "paraphrased" title and
-    # dropped the first block. That heuristic chewed off real first
-    # paragraphs — see test_ensure_title_does_not_drop_first_paragraph below.
-    # New behavior: if the first line doesn't match verbatim, just prepend
-    # the original. A near-duplicate in the output is acceptable; a missing
-    # opening paragraph is not.
-    cleaned = "Перефразированный заголовок\n\nтело текста."
-    out = _ensure_title_in_cleaned(cleaned, "Оригинал")
-    assert (
-        out
-        == "Оригинал\n\nПерефразированный заголовок\n\nтело текста."
+    # GPT got body only — no title, no channel line.
+    mock_cleanup.assert_awaited_once_with(
+        "Спикер 1: реальная реплика.", on_progress=ANY
+    )
+    sent_file = cb.message.reply_document.await_args.args[0]
+    body = sent_file.data.decode("utf-8")
+    # Final file: header restored verbatim, then cleaned body.
+    assert body == (
+        "Реальный заголовок\n📺 Канал: Куда расти?\n\nСпикер 1: реальная реплика."
     )
 
 
-def test_ensure_title_does_not_drop_first_paragraph_when_title_glued_or_missing():
-    # Regression: the model sometimes omits the blank line between title and
-    # first paragraph, or drops the title entirely. In both cases the old
-    # ``body.split("\n\n", 1)[1]`` deleted real content.
-    cleaned = (
-        "Перефраз заголовка\n"  # glued — single \n, not \n\n
-        "Первый важный абзац, который раньше терялся.\n\n"
-        "Второй абзац."
+async def test_cleanup_without_header_sends_full_text():
+    """If the cached text has no blank-line separator, treat all of it as body."""
+    source_text = "Просто длинный текст без шапки."
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"cleanup:{h}"
+    cb.message.reply_document = AsyncMock()
+
+    with patch(
+        "bot.handlers.callbacks.cleanup_transcript", new_callable=AsyncMock
+    ) as mock_cleanup:
+        mock_cleanup.return_value = "Очищенный текст."
+        await handle_cleanup(cb)
+
+    mock_cleanup.assert_awaited_once_with(source_text, on_progress=ANY)
+    sent_file = cb.message.reply_document.await_args.args[0]
+    assert sent_file.data.decode("utf-8") == "Очищенный текст."
+
+
+async def test_summary_strips_header_before_sending_to_gpt():
+    source_text = (
+        "Заголовок\n"
+        "📺 Канал: Куда расти?\n"
+        "\n"
+        "Длинный исходный текст для конспекта."
     )
-    out = _ensure_title_in_cleaned(cleaned, "Оригинал")
-    assert "Первый важный абзац, который раньше терялся." in out
-    assert out.startswith("Оригинал\n\n")
+    h = text_mod._store_text(source_text)
+    cb = _make_callback(text=None)
+    cb.data = f"summary:{h}"
+    cb.message.reply = AsyncMock()
 
+    with patch("bot.handlers.callbacks.summarize", new_callable=AsyncMock) as mock_sum:
+        mock_sum.return_value = "Короткий конспект."
+        await handle_summary(cb)
 
-def test_ensure_title_when_first_line_is_speaker_prefix_prepends_title():
-    # First line ``Спикер 1: ...`` is a reply, not a title — don't drop it.
-    cleaned = "Спикер 1: реплика без заголовка."
-    out = _ensure_title_in_cleaned(cleaned, "Заголовок")
-    assert out.startswith("Заголовок\n\nСпикер 1: реплика без заголовка.")
-
-
-def test_ensure_title_when_no_original_title_returns_unchanged():
-    cleaned = "что-то очищенное."
-    assert _ensure_title_in_cleaned(cleaned, None) == cleaned
+    mock_sum.assert_awaited_once_with(
+        "Длинный исходный текст для конспекта.", on_progress=ANY
+    )

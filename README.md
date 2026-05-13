@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.2.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -31,7 +31,7 @@ Universal-2 (с акустической диаризацией спикеров
 
 **Формат ответа:**
 - Короткий текст (≤ 2000 символов) — приходит прямо в чате
-- Длинный текст — приходит файлом `.txt` (имя файла строится из заголовка материала): первая строка — заголовок (генерируется GPT-4o по полной транскрипции), дальше — абзацы. Для записи с несколькими голосами реплики размечаются префиксом «Спикер 1», «Спикер 2» и т.д. — диаризация делается AssemblyAI по голосу, а не по тексту, поэтому метки стабильны на всём протяжении и не путаются. Для моно-записи префикс не ставится.
+- Длинный текст — приходит файлом `.txt` (имя файла строится из заголовка материала): первая строка — заголовок (оригинальное название видео из метаданных yt-dlp / Яндекс Музыки; если оно отсутствует или выглядит как ID/хэш — `dQw4w9WgXcQ` — генерируется GPT-4o). Если у источника известен канал/автор, второй строкой идёт `Канал: <имя>` — та же шапка выносится в caption у документа. Дальше — абзацы. Для записи с несколькими голосами реплики размечаются префиксом «Спикер 1», «Спикер 2» и т.д. — диаризация делается AssemblyAI по голосу, а не по тексту, поэтому метки стабильны на всём протяжении и не путаются. Для моно-записи префикс не ставится.
 
 **Доступ:** по whitelist Telegram user ID. Случайные пользователи не получают ответа.
 
@@ -48,7 +48,7 @@ Universal-2 (с акустической диаризацией спикеров
 | Сервис | Что | Цена |
 |---|---|---|
 | AssemblyAI | Транскрибация Universal-2 + диаризация спикеров | ~$0.37 |
-| OpenAI GPT-4o | Генерация заголовка файла | ~$0.03 |
+| OpenAI GPT-4o | Распознавание имён спикеров (и заголовка как fallback) | ~$0.03 |
 | OpenAI GPT-4o | Краткий конспект (кнопка, опционально) | ~$0.04–0.07 |
 | **Итого** | без конспекта / с конспектом | **~$0.40 / ~$0.45–0.50** |
 
@@ -347,8 +347,9 @@ life-transcriber/
 │   │   ├── commands.py          # /start, /limit
 │   │   └── callbacks.py         # кнопки «Краткий конспект» и «Скопировать»
 │   ├── services/
-│   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript
-│   │   ├── formatter.py         # render_with_speakers (A/B → Спикер 1/2) + generate_title через GPT-4o с полным контекстом
+│   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript (title + uploader)
+│   │   ├── source_meta.py       # SourceMetadata: title/uploader источника (yt-dlp/Yandex Music/Telegram)
+│   │   ├── formatter.py         # render_with_speakers (A/B → Спикер 1/2) + analyze_transcript: title/speakers через GPT-4o (title используется как fallback, если source_meta.title — хэш)
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект, chunking длинных текстов
 │   │   ├── instagram.py         # Instagram Reels через Cobalt API
 │   │   ├── facebook.py          # Facebook Videos/Reels через Cobalt API

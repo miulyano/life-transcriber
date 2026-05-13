@@ -34,8 +34,8 @@ async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
         events.append(("download", destination))
         Path(destination).write_bytes(b"voice")
 
-    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, filename_hint=None, on_phase_change=None):
-        events.append(("pipeline", audio_path, user_id, filename_hint))
+    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, source_meta=None, on_phase_change=None):
+        events.append(("pipeline", audio_path, user_id, source_meta))
         await deliver_text("transcript")
 
     async def fake_reply_text_or_file(_message, text):

@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from bot.config import settings
 from bot.services.media import prepare_audio_for_transcription
+from bot.services.source_meta import SourceMetadata
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
@@ -108,7 +109,7 @@ async def _process_upload(
                         reporter=reporter,
                         deliver_text=deliver_text,
                         user_id=user_id,
-                        filename_hint=filename_hint,
+                        source_meta=SourceMetadata(title=filename_hint or None),
                         on_phase_change=on_phase_change,
                     )
                 except LimitExceededError as exc:

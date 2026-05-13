@@ -34,10 +34,10 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
         reporter,
         deliver_text,
         user_id,
-        filename_hint=None,
+        source_meta=None,
         on_phase_change=None,
     ) -> None:
-        calls.append(("pipeline", audio_path, user_id, filename_hint))
+        calls.append(("pipeline", audio_path, user_id, source_meta))
         await deliver_text("готовый текст")
 
     send_transcript = AsyncMock()
@@ -52,9 +52,10 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
 
     await webapp_main._process_upload(str(source), user_id=111)
 
+    from bot.services.source_meta import SourceMetadata as _SM
     assert calls == [
         ("prepare", str(source), webapp_main.settings.TEMP_DIR),
-        ("pipeline", str(audio), 111, None),
+        ("pipeline", str(audio), 111, _SM()),
     ]
     send_transcript.assert_awaited_once_with(bot, 111, "готовый текст")
     bot.send_message.assert_awaited_once()

@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import bot.services.transcription_pipeline as pipeline_module
+from bot.services.source_meta import SourceMetadata
 from bot.services.transcriber import FormattedTranscript
 
 
@@ -47,8 +48,8 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
     reporter = _Reporter()
     events = []
 
-    async def fake_transcribe(path, *, filename_hint=None, on_phase=None, on_progress=None, on_progress_fraction=None):
-        events.append(("transcribe", path, filename_hint))
+    async def fake_transcribe(path, *, source_meta=None, on_phase=None, on_progress=None, on_progress_fraction=None):
+        events.append(("transcribe", path, source_meta))
         return _result(body="T\n\nСпикер 1: hi")
 
     async def fake_deliver(text):
@@ -60,18 +61,19 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
     monkeypatch.setattr(pipeline_module, "transcribe", fake_transcribe)
 
     store = _NoLimitStore()
+    meta = SourceMetadata(title="title hint", uploader="Channel")
     await pipeline_module.run_transcription_pipeline(
         "/tmp/audio.mp3",
         reporter=reporter,
         deliver_text=fake_deliver,
         user_id=111,
-        filename_hint="title hint",
+        source_meta=meta,
         on_phase_change=fake_phase_change,
         usage_store=store,
     )
 
     assert events == [
-        ("transcribe", "/tmp/audio.mp3", "title hint"),
+        ("transcribe", "/tmp/audio.mp3", meta),
         ("phase-change", "Отправляю результат…"),
         ("deliver", "T\n\nСпикер 1: hi"),
     ]
@@ -82,7 +84,7 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_passes_none_filename_hint(monkeypatch):
+async def test_pipeline_passes_none_source_meta(monkeypatch):
     reporter = _Reporter()
     transcribe_mock = AsyncMock(return_value=_result())
 
@@ -96,5 +98,5 @@ async def test_pipeline_passes_none_filename_hint(monkeypatch):
         usage_store=_NoLimitStore(),
     )
 
-    assert transcribe_mock.await_args.kwargs["filename_hint"] is None
+    assert transcribe_mock.await_args.kwargs["source_meta"] is None
     assert "on_phase" in transcribe_mock.await_args.kwargs

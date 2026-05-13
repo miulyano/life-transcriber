@@ -11,6 +11,7 @@ triggers the "Форматирую…" phase via ``on_phase`` callback.
 """
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
@@ -24,12 +25,29 @@ from bot.services.formatter import (
     render_with_speakers,
     split_into_paragraphs,
 )
+from bot.services.source_meta import SourceMetadata
 from bot.services.word_boost import (
     apply_custom_spelling,
     load_custom_spelling,
     load_word_boost,
 )
 from bot.utils.fake_progress import FractionCallback
+
+# A title that looks like an ID/hash (e.g. `dQw4w9WgXcQ`, `a1b2c3d4-...`) carries no
+# meaning; we fall back to GPT in that case.  Matches ASCII alphanumerics plus
+# `-`/`_`, length ≥ 8, no spaces, no non-ASCII letters.
+_HASH_TITLE_RE = re.compile(r"^[A-Za-z0-9_-]{8,}$")
+
+
+def _is_hash_like_title(title: str) -> bool:
+    stripped = title.strip()
+    if not stripped or " " in stripped:
+        return False
+    if not _HASH_TITLE_RE.fullmatch(stripped):
+        return False
+    has_letter = any(c.isalpha() for c in stripped)
+    has_digit = any(c.isdigit() for c in stripped)
+    return has_letter and has_digit
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +66,12 @@ class Utterance:
 @dataclass
 class FormattedTranscript:
     title: str
-    body: str  # title + blank line + speaker-labelled body
+    body: str  # title (+ "Канал: ...") + blank line + speaker-labelled body
     raw_text: str  # AssemblyAI text after custom_spelling, no speaker prefixes
     language: Optional[str]
     speaker_count: int
     audio_duration_sec: float = 0.0
+    uploader: Optional[str] = None
 
 
 # Loaded once at import — restart the bot to pick up edits to the data files.
@@ -143,23 +162,34 @@ async def _run_assemblyai(
 async def transcribe(
     audio_path: str,
     *,
-    filename_hint: Optional[str] = None,
+    source_meta: Optional[SourceMetadata] = None,
     on_phase: Optional[PhaseCallback] = None,
     on_progress: Optional[ProgressCallback] = None,  # unused, kept for API compat
     on_progress_fraction: Optional[FractionCallback] = None,
 ) -> FormattedTranscript:
     """Transcribe audio and return a fully formatted transcript ready to deliver.
 
+    If ``source_meta.title`` is a meaningful string (not an opaque id/hash), it
+    is used as the result title verbatim — GPT (``analyze_transcript``) is still
+    called to detect speaker names, but its title is discarded.  Otherwise the
+    GPT-generated title is used.
+
     Phases emitted via ``on_phase``:
     - "Форматирую…" — when the GPT analysis step begins (title + speaker names).
     The caller is responsible for setting the initial "Транскрибирую…" phase.
     """
-    return await _transcribe_inner(audio_path, filename_hint, on_phase, on_progress_fraction)
+    return await _transcribe_inner(audio_path, source_meta, on_phase, on_progress_fraction)
+
+
+def _build_header(title: str, uploader: Optional[str]) -> str:
+    if title and uploader:
+        return f"{title}\nКанал: {uploader}"
+    return title
 
 
 async def _transcribe_inner(
     audio_path: str,
-    filename_hint: Optional[str],
+    source_meta: Optional[SourceMetadata],
     on_phase: Optional[PhaseCallback],
     on_fraction: Optional[FractionCallback],
 ) -> FormattedTranscript:
@@ -176,20 +206,39 @@ async def _transcribe_inner(
     if on_phase:
         await on_phase("Форматирую…")
 
+    source_title = (source_meta.title or "").strip() if source_meta else ""
+    uploader = (source_meta.uploader or "").strip() if source_meta else ""
+    prefer_original = bool(source_title) and not _is_hash_like_title(source_title)
+
     title = ""
     name_map: dict[str, str] = {}
     if raw_text:
         try:
-            title, name_map = await analyze_transcript(raw_text, utterances, filename_hint)
+            gpt_title, name_map = await analyze_transcript(
+                raw_text, utterances, source_title or None
+            )
         except Exception:
-            logger.warning("analyze_transcript raised, falling back to filename", exc_info=True)
-        if not title:
-            title = (filename_hint or "").strip()
+            logger.warning("analyze_transcript raised, falling back to source title", exc_info=True)
+            gpt_title = ""
+
+        if prefer_original:
+            title = source_title
+        elif gpt_title:
+            title = gpt_title
+        else:
+            title = source_title  # last-resort fallback even if hash-like
 
     body_text = render_with_speakers(utterances, name_map) if utterances else raw_text
     if speaker_count == 1 and "\n\n" not in body_text and len(body_text) > PARA_SPLIT_THRESHOLD:
         body_text = await split_into_paragraphs(body_text)
-    body = f"{title}\n\n{body_text}".strip() if title else body_text
+
+    header = _build_header(title, uploader or None)
+    if header and body_text:
+        body = f"{header}\n\n{body_text}"
+    else:
+        body = header or body_text
+    body = body.strip()
+
     language = getattr(transcript, "language_code", None) or settings.FORCE_LANGUAGE_CODE
     audio_duration_sec = float(getattr(transcript, "audio_duration", 0) or 0)
     return FormattedTranscript(
@@ -199,4 +248,5 @@ async def _transcribe_inner(
         language=language,
         speaker_count=speaker_count,
         audio_duration_sec=audio_duration_sec,
+        uploader=(uploader or None),
     )

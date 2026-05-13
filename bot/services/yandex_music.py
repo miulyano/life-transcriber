@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
+from bot.services.source_meta import SourceMetadata
 from bot.services.stream_download import stream_download_to_file
 from bot.services.user_facing_error import UserFacingError
 
@@ -43,7 +44,7 @@ def is_yandex_music_episode_url(url: str) -> bool:
 async def download_podcast_episode_from_yandex_music(
     url: str,
     output_dir: str,
-) -> tuple[str, str | None]:
+) -> tuple[str, SourceMetadata]:
     match = YANDEX_MUSIC_EPISODE_URL_RE.match(url)
     if not match:
         raise UserFacingError("yandex-music", "некорректная ссылка на выпуск")
@@ -76,18 +77,11 @@ async def download_podcast_episode_from_yandex_music(
             episode_title,
         )
         path = await _download_to_file(session, enclosure_url, output_dir)
-        source_title = _compose_source_title(podcast_title, episode_title)
-        return path, source_title
-
-
-def _compose_source_title(
-    podcast_title: str | None, episode_title: str | None
-) -> str | None:
-    parts = [p for p in (podcast_title, episode_title) if p]
-    if not parts:
-        return None
-    base = " — ".join(parts)
-    return f"подкаст «{base}»"
+        meta = SourceMetadata(
+            title=(episode_title or None),
+            uploader=(podcast_title or None),
+        )
+        return path, meta
 
 
 async def _fetch_album(

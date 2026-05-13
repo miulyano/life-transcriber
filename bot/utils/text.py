@@ -11,7 +11,9 @@ from aiogram.types import (
 )
 
 from bot.config import settings
-from bot.utils.filename import build_filename, extract_title
+from bot.utils.filename import build_filename, extract_caption, extract_title
+
+TELEGRAM_CAPTION_LIMIT = 1024
 
 # In-memory store: {hash: (text, timestamp)}
 _text_cache: dict[str, tuple[str, float]] = {}
@@ -75,7 +77,14 @@ class _TranscriptPrep(NamedTuple):
     send_as_file: bool
     keyboard: Optional[InlineKeyboardMarkup]
     title: str
+    caption: str
     filename: str
+
+
+def _truncate_caption(caption: str) -> str:
+    if len(caption) <= TELEGRAM_CAPTION_LIMIT:
+        return caption
+    return caption[: TELEGRAM_CAPTION_LIMIT - 1].rstrip() + "…"
 
 
 def prepare_transcript(text: str) -> _TranscriptPrep:
@@ -83,11 +92,13 @@ def prepare_transcript(text: str) -> _TranscriptPrep:
     h = _store_text(text)
     send_as_file = len(text) > settings.LONG_TEXT_THRESHOLD
     kb = build_keyboard(text, h, send_as_file=send_as_file)
-    title = extract_title(text)
+    title = extract_title(text) or ""
+    caption = extract_caption(text) or title
     return _TranscriptPrep(
         send_as_file=send_as_file,
         keyboard=kb,
         title=title,
+        caption=caption,
         filename=build_filename(title),
     )
 
@@ -97,8 +108,9 @@ async def reply_text_or_file(message: Message, text: str) -> None:
     if not d.send_as_file:
         await message.reply(text, reply_markup=d.keyboard)
     else:
+        caption = _truncate_caption(d.caption) if d.caption else "Транскрибация готова."
         await message.reply_document(
             BufferedInputFile(text.encode("utf-8"), filename=d.filename),
-            caption=d.title or "Транскрибация готова.",
+            caption=caption,
             reply_markup=d.keyboard,
         )

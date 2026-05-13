@@ -109,7 +109,7 @@ async def test_download_podcast_episode_from_yandex_music_uses_rss(tmp_path):
         )
         m.get(enclosure_url, body=b"audio")
 
-        path, source_title = await download_podcast_episode_from_yandex_music(
+        path, meta = await download_podcast_episode_from_yandex_music(
             public_key,
             str(tmp_path),
         )
@@ -117,9 +117,9 @@ async def test_download_podcast_episode_from_yandex_music_uses_rss(tmp_path):
     assert Path(path).exists()
     assert Path(path).suffix == ".mp3"
     assert Path(path).read_bytes() == b"audio"
-    assert source_title is not None
-    assert "Куда расти?" in source_title
-    assert "Артём Арюткин" in source_title
+    assert meta.uploader == "Куда расти?"
+    assert meta.title is not None
+    assert "Артём Арюткин" in meta.title
 
 
 @pytest.mark.asyncio
@@ -172,7 +172,8 @@ async def test_download_audio_uses_rss_for_yandex_music_podcast(tmp_path, monkey
         audio_path.write_bytes(b"audio")
         assert url == "https://music.yandex.ru/album/9091882/track/60513409"
         assert output_dir == str(tmp_path)
-        return str(audio_path), "подкаст «Test — Episode»"
+        from bot.services.source_meta import SourceMetadata as _SM
+        return str(audio_path), _SM(title="Episode", uploader="Test")
 
     async def fake_exec(*_args, **_kwargs):
         raise AssertionError("yt-dlp should not be called")
@@ -188,13 +189,14 @@ async def test_download_audio_uses_rss_for_yandex_music_podcast(tmp_path, monkey
         fake_exec,
     )
 
-    result_path, result_title = await downloader_module.download_audio(
+    result_path, result_meta = await downloader_module.download_audio(
         "https://music.yandex.ru/album/9091882/track/60513409",
         str(tmp_path),
     )
 
     assert result_path == str(audio_path)
-    assert result_title == "подкаст «Test — Episode»"
+    assert result_meta.title == "Episode"
+    assert result_meta.uploader == "Test"
 
 
 @pytest.mark.asyncio

@@ -164,6 +164,54 @@ async def test_threshold_boundary_file():
     message.reply.assert_not_called()
 
 
+async def test_long_text_caption_includes_channel_line():
+    """Document caption must include the 'Канал: ...' header line, not just the title."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    title = "Подкаст про AI"
+    uploader = "ШАД"
+    body_text = "x" * 3000  # > LONG_TEXT_THRESHOLD → file
+    full = f"{title}\nКанал: {uploader}\n\n{body_text}"
+    await reply_text_or_file(message, full)
+
+    caption = message.reply_document.await_args.kwargs["caption"]
+    assert title in caption
+    assert f"Канал: {uploader}" in caption
+
+
+async def test_long_text_caption_without_channel():
+    """When there is no 'Канал:' line, caption is just the title."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    title = "Просто заголовок"
+    body_text = "x" * 3000
+    full = f"{title}\n\n{body_text}"
+    await reply_text_or_file(message, full)
+
+    caption = message.reply_document.await_args.kwargs["caption"]
+    assert caption == title
+
+
+async def test_long_text_caption_truncated_when_too_long():
+    """Caption longer than Telegram limit (1024) is truncated with an ellipsis."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    title = "T" * 1100  # already over the cap
+    body_text = "x" * 3000
+    full = f"{title}\n\n{body_text}"
+    await reply_text_or_file(message, full)
+
+    caption = message.reply_document.await_args.kwargs["caption"]
+    assert len(caption) <= 1024
+    assert caption.endswith("…")
+
+
 async def test_reply_caches_text_via_copy_button():
     """After reply_text_or_file, text is retrievable via copy button hash (inline text > 256 chars)."""
     message = MagicMock()

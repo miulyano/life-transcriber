@@ -211,7 +211,82 @@ async def test_transcribe_raises_on_assemblyai_error(tmp_path, fake_polling):
 
 
 @pytest.mark.asyncio
+async def test_transcribe_prefers_original_source_title_over_gpt(tmp_path, fake_polling):
+    """If source_meta.title is meaningful, use it verbatim instead of GPT-generated title."""
+    from bot.services.source_meta import SourceMetadata
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    result = await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"),
+        source_meta=SourceMetadata(
+            title="Подкаст про AI: как обучать модели",
+            uploader="ШАД",
+        ),
+    )
+
+    assert result.title == "Подкаст про AI: как обучать модели"
+    assert result.uploader == "ШАД"
+    # Body header: title + "Канал: ..." + blank line + body
+    assert result.body.startswith(
+        "Подкаст про AI: как обучать модели\nКанал: ШАД\n\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_transcribe_falls_back_to_gpt_on_hash_title(tmp_path, fake_polling, monkeypatch):
+    """If source_meta.title looks like an id/hash (e.g. dQw4w9WgXcQ), call GPT for a real title."""
+    from bot.services.source_meta import SourceMetadata
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    async def _gpt(raw, utterances, hint):
+        return "Generated Title", {}
+    monkeypatch.setattr(transcriber_module, "analyze_transcript", _gpt)
+
+    result = await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"),
+        source_meta=SourceMetadata(title="dQw4w9WgXcQ"),
+    )
+
+    assert result.title == "Generated Title"
+    assert result.body.startswith("Generated Title\n\n")
+
+
+@pytest.mark.asyncio
+async def test_transcribe_uploader_omitted_when_absent(tmp_path, fake_polling):
+    """Without uploader the body has no 'Канал:' line."""
+    from bot.services.source_meta import SourceMetadata
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    result = await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"),
+        source_meta=SourceMetadata(title="Просто заголовок"),
+    )
+
+    assert result.title == "Просто заголовок"
+    assert "Канал:" not in result.body
+    assert result.uploader is None
+
+
+def test_is_hash_like_title():
+    f = transcriber_module._is_hash_like_title
+    # Hash-like: mixed alnum, no spaces, ≥ 8 chars
+    assert f("dQw4w9WgXcQ") is True
+    assert f("abc12345") is True
+    # Not hash-like: spaces, plain words, non-ASCII letters, too short
+    assert f("Встреча команды") is False
+    assert f("meeting") is False  # too short
+    assert f("meetings") is False  # letters only, no digits
+    assert f("Episode 42") is False  # contains space
+    assert f("Подкаст") is False  # cyrillic
+    assert f("") is False
+
+
+@pytest.mark.asyncio
 async def test_transcribe_title_falls_back_to_filename_on_error(tmp_path, fake_polling, monkeypatch):
+    from bot.services.source_meta import SourceMetadata
     _submit_calls, holder = fake_polling
     holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
 
@@ -220,7 +295,8 @@ async def test_transcribe_title_falls_back_to_filename_on_error(tmp_path, fake_p
     monkeypatch.setattr(transcriber_module, "analyze_transcript", _boom)
 
     result = await transcriber_module.transcribe(
-        str(tmp_path / "a.mp3"), filename_hint="meeting.mp3"
+        str(tmp_path / "a.mp3"),
+        source_meta=SourceMetadata(title="meeting.mp3"),
     )
 
     assert result.title == "meeting.mp3"

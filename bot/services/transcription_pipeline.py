@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Optional, Protocol
 
+from bot.services.source_meta import SourceMetadata
 from bot.services.transcriber import transcribe
 from bot.services.usage_store import UsageStore, get_store
 
@@ -24,7 +25,7 @@ async def run_transcription_pipeline(
     reporter: Reporter,
     deliver_text: DeliverText,
     user_id: int,
-    filename_hint: Optional[str] = None,
+    source_meta: Optional[SourceMetadata] = None,
     on_phase_change: Optional[PhaseCallback] = None,
     usage_store: Optional[UsageStore] = None,
 ) -> None:
@@ -45,7 +46,7 @@ async def run_transcription_pipeline(
 
     result = await transcribe(
         audio_path,
-        filename_hint=filename_hint,
+        source_meta=source_meta,
         on_phase=reporter.set_phase,
         on_progress=reporter.set_progress,
         on_progress_fraction=reporter.set_progress_fraction,

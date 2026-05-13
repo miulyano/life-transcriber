@@ -90,10 +90,11 @@ async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeyp
     async def fake_download_audio(url, _output_dir):
         events.append(("download", url))
         audio_path.write_bytes(b"audio")
-        return str(audio_path), None
+        from bot.services.source_meta import SourceMetadata as _SM
+        return str(audio_path), _SM()
 
-    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, filename_hint=None, on_phase_change=None):
-        events.append(("pipeline", audio_path, user_id, filename_hint))
+    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, source_meta=None, on_phase_change=None):
+        events.append(("pipeline", audio_path, user_id, source_meta))
         await reporter.set_phase("Форматирую…")
         await reporter.set_phase("Отправляю результат…")
         await deliver_text("transcript")

@@ -9,6 +9,7 @@ from aiogram.types import Message
 from bot.config import settings
 from bot.services.downloader import download_audio
 from bot.services.error_messages import format_download_error
+from bot.services.source_meta import SourceMetadata
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
@@ -29,12 +30,12 @@ async def handle_link(message: Message) -> None:
 
     user_id = message.from_user.id if message.from_user else 0
     audio_path: str | None = None
-    source_title: str | None = None
+    source_meta: SourceMetadata = SourceMetadata()
     async with ProgressReporter(message, "Скачиваю аудио по ссылке…") as reporter:
         limit_exceeded: LimitExceededError | None = None
         try:
             try:
-                audio_path, source_title = await download_audio(url, settings.TEMP_DIR)
+                audio_path, source_meta = await download_audio(url, settings.TEMP_DIR)
             except RuntimeError as e:
                 await reporter.fail(_friendly_error(e))
                 return
@@ -49,7 +50,7 @@ async def handle_link(message: Message) -> None:
                     reporter=reporter,
                     deliver_text=deliver_text,
                     user_id=user_id,
-                    filename_hint=source_title,
+                    source_meta=source_meta,
                 )
             except LimitExceededError as exc:
                 limit_exceeded = exc

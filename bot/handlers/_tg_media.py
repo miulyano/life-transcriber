@@ -8,6 +8,7 @@ from aiogram.types import Message
 
 from bot.config import settings
 from bot.services.downloader import extract_audio
+from bot.services.source_meta import SourceMetadata
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
@@ -33,6 +34,7 @@ async def process_tg_media(
 ) -> None:
     """Download a Telegram file, optionally extract audio, then transcribe."""
     user_id = message.from_user.id if message.from_user else 0
+    source_meta = SourceMetadata(title=filename_hint or None)
     async with ProgressReporter(message, label) as reporter:
         media_path = await download_tg_file(bot, file_id, suffix)
         audio_path: str | None = None
@@ -55,7 +57,7 @@ async def process_tg_media(
                     reporter=reporter,
                     deliver_text=deliver_text,
                     user_id=user_id,
-                    filename_hint=filename_hint,
+                    source_meta=source_meta,
                 )
             except LimitExceededError as exc:
                 limit_exceeded = exc

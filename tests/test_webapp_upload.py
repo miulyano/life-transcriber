@@ -57,7 +57,7 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
         ("prepare", str(source), webapp_main.settings.TEMP_DIR),
         ("pipeline", str(audio), 111, _SM()),
     ]
-    send_transcript.assert_awaited_once_with(bot, 111, "готовый текст")
+    send_transcript.assert_awaited_once_with(bot, 111, "готовый текст", None)
     bot.send_message.assert_awaited_once()
     first_send = bot.send_message.await_args
     assert first_send.args[0] == 111

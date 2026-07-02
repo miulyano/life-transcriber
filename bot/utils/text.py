@@ -1,5 +1,6 @@
 import hashlib
 import html
+import re
 import time
 from typing import NamedTuple, Optional
 
@@ -20,6 +21,14 @@ from bot.utils.filename import (
 
 TELEGRAM_CAPTION_LIMIT = 1024
 CHANNEL_LINE_PREFIX = "📺 Канал: "
+
+# [0:15] / [12:40] / [1:43:06] at the start of a line (timecoded file variant)
+TIMECODE_RE = re.compile(r"^\[\d{1,2}(?::\d{2}){1,2}\] ", re.MULTILINE)
+
+
+def strip_timecodes(text: str) -> str:
+    """Remove leading [m:ss] / [h:mm:ss] stamps from a timecoded transcript."""
+    return TIMECODE_RE.sub("", text)
 
 # In-memory store: {hash: (text, timestamp)}
 _text_cache: dict[str, tuple[str, float]] = {}
@@ -166,14 +175,20 @@ def prepare_transcript(text: str) -> _TranscriptPrep:
     )
 
 
-async def reply_text_or_file(message: Message, text: str) -> None:
+async def reply_text_or_file(message: Message, text: str, file_text: Optional[str] = None) -> None:
+    """Reply inline or as a document.
+
+    Everything (file/inline threshold, cache, keyboard, caption, filename) is
+    derived from the plain ``text``; ``file_text`` only replaces the document
+    content — e.g. the timecoded transcript variant.
+    """
     d = prepare_transcript(text)
     if not d.send_as_file:
         await message.reply(d.body_html, reply_markup=d.keyboard)
     else:
         caption = d.caption_html or "Транскрибация готова."
         await message.reply_document(
-            BufferedInputFile(text.encode("utf-8"), filename=d.filename),
+            BufferedInputFile((file_text or text).encode("utf-8"), filename=d.filename),
             caption=caption,
             reply_markup=d.keyboard,
         )

@@ -8,7 +8,7 @@ raw_text is used (no speaker detection needed).
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from openai import AsyncOpenAI
 
@@ -29,7 +29,29 @@ ANALYSIS_MAX_TOKENS = 200
 PARA_SPLIT_THRESHOLD = 300  # chars; shorter single-speaker texts are fine as-is
 PARA_SPLIT_MAX_INPUT = 20_000
 
+TIMECODE_INTERVAL_SEC = 15  # min seconds between stamps in the timecoded rendering
+_SENT_END_RE = re.compile(r'[.!?…]["»)\']?$')
+
 _LABELED_BLOCK_RE = re.compile(r"^([^\n:]{1,40}?):\s(.*)", re.DOTALL | re.UNICODE)
+
+
+def _speaker_label_resolver(
+    name_map: Optional[dict[str, str]],
+) -> Callable[[str], str]:
+    """Return a closure mapping AssemblyAI labels to display names.
+
+    Real names come from name_map; unknown speakers get "Спикер N" numbered
+    in order of first appearance.  Shared by both renderers so labels match.
+    """
+    mapping: dict[str, str] = {}
+
+    def _label_for(speaker: str) -> str:
+        if speaker not in mapping:
+            real = (name_map or {}).get(speaker, "")
+            mapping[speaker] = real.strip() or f"Спикер {len(mapping) + 1}"
+        return mapping[speaker]
+
+    return _label_for
 
 
 def _merge_adjacent_same_speaker(text: str) -> str:
@@ -68,13 +90,7 @@ def render_with_speakers(
     if len(speakers) == 1:
         return "\n\n".join(u.text.strip() for u in utterances if u.text.strip())
 
-    mapping: dict[str, str] = {}
-
-    def _label_for(speaker: str) -> str:
-        if speaker not in mapping:
-            real = (name_map or {}).get(speaker, "")
-            mapping[speaker] = real.strip() or f"Спикер {len(mapping) + 1}"
-        return mapping[speaker]
+    _label_for = _speaker_label_resolver(name_map)
 
     parts: list[str] = []
     for u in utterances:
@@ -84,6 +100,81 @@ def render_with_speakers(
         parts.append(f"{_label_for(u.speaker)}: {text}")
     body = "\n\n".join(parts)
     return _merge_adjacent_same_speaker(body)
+
+
+def _fmt_ts(ms: int) -> str:
+    h, rem = divmod(max(ms, 0) // 1000, 3600)
+    m, s = divmod(rem, 60)
+    return f"[{h}:{m:02d}:{s:02d}]" if h else f"[{m}:{s:02d}]"
+
+
+def render_with_timecodes(
+    utterances: list["Utterance"],
+    name_map: Optional[dict[str, str]] = None,
+) -> str:
+    """YouTube-style timecoded rendering for the .txt file variant.
+
+    Multi-speaker: each speaker turn is a block — label on its own line,
+    ``[m:ss] text`` lines below, blank line between blocks.  Mono: no label
+    lines, just stamped lines.  A new stamped line starts at the first
+    sentence boundary once TIMECODE_INTERVAL_SEC passed since the previous
+    stamp (an utterance boundary counts as a sentence boundary); sentences
+    are never broken mid-way, so unpunctuated stretches keep growing.
+    """
+    if not utterances:
+        return ""
+    multi = len({u.speaker for u in utterances}) > 1
+    _label_for = _speaker_label_resolver(name_map)
+    interval_ms = TIMECODE_INTERVAL_SEC * 1000
+
+    out_lines: list[str] = []
+    cur_line: list[str] = []
+    last_stamp_ms = 0
+    cur_speaker: Optional[str] = None
+    prev_word = ""
+
+    def start_line(stamp_ms: int) -> None:
+        nonlocal cur_line, last_stamp_ms
+        if cur_line:
+            out_lines.append(" ".join(cur_line))
+        cur_line = [_fmt_ts(stamp_ms)]
+        last_stamp_ms = stamp_ms
+
+    for u in utterances:
+        text = u.text.strip()
+        if not text:
+            continue
+        words = [(w.text.strip(), w.start_ms) for w in u.words if w.text.strip()]
+        if not words:
+            words = [(text, u.start_ms)]
+
+        if cur_speaker is None or (multi and u.speaker != cur_speaker):
+            if cur_line:
+                out_lines.append(" ".join(cur_line))
+                cur_line = []
+            if out_lines:
+                out_lines.append("")
+            if multi:
+                out_lines.append(_label_for(u.speaker))
+            cur_speaker = u.speaker
+            start_line(words[0][1])
+        elif words[0][1] - last_stamp_ms >= interval_ms:
+            # Utterance boundary counts as a sentence boundary.
+            start_line(words[0][1])
+
+        for w_text, w_start in words:
+            if (
+                len(cur_line) > 1
+                and w_start - last_stamp_ms >= interval_ms
+                and _SENT_END_RE.search(prev_word)
+            ):
+                start_line(w_start)
+            cur_line.append(w_text)
+            prev_word = w_text
+
+    if cur_line:
+        out_lines.append(" ".join(cur_line))
+    return "\n".join(out_lines)
 
 
 async def analyze_transcript(

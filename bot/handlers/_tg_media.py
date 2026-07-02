@@ -48,8 +48,8 @@ async def process_tg_media(
             else:
                 transcribe_path = media_path
 
-            async def deliver_text(text: str) -> None:
-                await reply_text_or_file(message, text)
+            async def deliver_text(text: str, file_text: str | None = None) -> None:
+                await reply_text_or_file(message, text, file_text)
 
             try:
                 await run_transcription_pipeline(

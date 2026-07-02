@@ -76,6 +76,20 @@ async def test_extract_document_text():
     cb.bot.download.assert_awaited_once_with("file_123")
 
 
+async def test_extract_document_strips_timecodes():
+    """A downloaded .txt may be the timecoded variant — stamps must not reach GPT."""
+    doc = MagicMock()
+    doc.file_id = "file_tc"
+    cb = _make_callback(document=doc)
+    cb.bot.download.return_value = BytesIO(
+        "Заголовок\n\nСпикер 1\n[0:00] Привет.\n[0:20] Ещё.".encode("utf-8")
+    )
+
+    result = await _extract_text_from_message(cb)
+
+    assert result == "Заголовок\n\nСпикер 1\nПривет.\nЕщё."
+
+
 async def test_extract_inaccessible_message():
     cb = _make_callback(is_inaccessible=True)
     result = await _extract_text_from_message(cb)
@@ -127,6 +141,42 @@ async def test_handle_summary_fallback_document():
         await handle_summary(cb)
 
     mock_sum.assert_awaited_once_with("doc text", on_progress=ANY)
+
+
+async def test_handle_summary_fallback_document_with_timecodes():
+    doc = MagicMock()
+    doc.file_id = "file_tc2"
+    cb = _make_callback(document=doc)
+    cb.data = "summary:nonexistent_hash"
+    cb.bot.download.return_value = BytesIO(
+        "Заголовок\n\n[0:00] Привет.\n[0:20] Пока.".encode("utf-8")
+    )
+    cb.message.reply = AsyncMock()
+
+    with patch("bot.handlers.callbacks.summarize", new_callable=AsyncMock) as mock_sum:
+        mock_sum.return_value = "summary"
+        await handle_summary(cb)
+
+    mock_sum.assert_awaited_once_with("Привет.\nПока.", on_progress=ANY)
+
+
+async def test_handle_cleanup_fallback_document_with_timecodes():
+    doc = MagicMock()
+    doc.file_id = "file_tc3"
+    cb = _make_callback(document=doc)
+    cb.data = "cleanup:nonexistent_hash"
+    cb.bot.download.return_value = BytesIO(
+        "Заголовок\n\nСпикер 1\n[0:00] Ну это текст.".encode("utf-8")
+    )
+    cb.message.reply_document = AsyncMock()
+
+    with patch(
+        "bot.handlers.callbacks.cleanup_transcript", new_callable=AsyncMock
+    ) as mock_cleanup:
+        mock_cleanup.return_value = "Спикер 1\nТекст."
+        await handle_cleanup(cb)
+
+    mock_cleanup.assert_awaited_once_with("Спикер 1\nНу это текст.", on_progress=ANY)
 
 
 async def test_handle_summary_fallback_recaches():

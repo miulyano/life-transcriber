@@ -12,7 +12,7 @@ triggers the "Форматирую…" phase via ``on_phase`` callback.
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 import assemblyai as aai
@@ -23,6 +23,7 @@ from bot.services.formatter import (
     PARA_SPLIT_THRESHOLD,
     analyze_transcript,
     render_with_speakers,
+    render_with_timecodes,
     split_into_paragraphs,
 )
 from bot.services.source_meta import SourceMetadata
@@ -56,11 +57,19 @@ PhaseCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass
+class Word:
+    text: str
+    start_ms: int
+    end_ms: int
+
+
+@dataclass
 class Utterance:
     speaker: str  # AssemblyAI label: "A", "B", "C", ...
     text: str
     start_ms: int
     end_ms: int
+    words: list[Word] = field(default_factory=list)
 
 
 @dataclass
@@ -72,6 +81,7 @@ class FormattedTranscript:
     speaker_count: int
     audio_duration_sec: float = 0.0
     uploader: Optional[str] = None
+    body_timecoded: str = ""  # same as body but with [m:ss] stamps (file variant)
 
 
 # Loaded once at import — restart the bot to pick up edits to the data files.
@@ -107,6 +117,14 @@ def _utterances_from_response(transcript) -> list[Utterance]:
                 text=u.text or "",
                 start_ms=int(getattr(u, "start", 0) or 0),
                 end_ms=int(getattr(u, "end", 0) or 0),
+                words=[
+                    Word(
+                        text=w.text or "",
+                        start_ms=int(getattr(w, "start", 0) or 0),
+                        end_ms=int(getattr(w, "end", 0) or 0),
+                    )
+                    for w in (getattr(u, "words", None) or [])
+                ],
             )
         )
     return out
@@ -232,12 +250,21 @@ async def _transcribe_inner(
     if speaker_count == 1 and "\n\n" not in body_text and len(body_text) > PARA_SPLIT_THRESHOLD:
         body_text = await split_into_paragraphs(body_text)
 
+    # Word texts skipped custom_spelling above, so apply it to the rendered result.
+    timecoded_text = render_with_timecodes(utterances, name_map) if utterances else ""
+    timecoded_text = apply_custom_spelling(timecoded_text, _CUSTOM_SPELLING)
+
     header = _build_header(title, uploader or None)
     if header and body_text:
         body = f"{header}\n\n{body_text}"
     else:
         body = header or body_text
     body = body.strip()
+
+    if timecoded_text:
+        body_timecoded = f"{header}\n\n{timecoded_text}".strip() if header else timecoded_text
+    else:
+        body_timecoded = body
 
     language = getattr(transcript, "language_code", None) or settings.FORCE_LANGUAGE_CODE
     audio_duration_sec = float(getattr(transcript, "audio_duration", 0) or 0)
@@ -249,4 +276,5 @@ async def _transcribe_inner(
         speaker_count=speaker_count,
         audio_duration_sec=audio_duration_sec,
         uploader=(uploader or None),
+        body_timecoded=body_timecoded,
     )

@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] – 2026-07-02
+
 ### Changed
 
 - Для файловых источников (ссылка на Яндекс.Диск, загруженный файл, webapp-upload) заголовок генерируется GPT по содержанию, а не берётся из имени файла; имя файла остаётся подсказкой для GPT и fallback'ом

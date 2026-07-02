@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.5.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.6.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -48,7 +48,7 @@ Universal-2 (с акустической диаризацией спикеров
 | Сервис | Что | Цена |
 |---|---|---|
 | AssemblyAI | Транскрибация Universal-2 + диаризация спикеров | ~$0.37 |
-| OpenAI GPT-4o | Распознавание имён спикеров (и заголовка как fallback) | ~$0.03 |
+| OpenAI GPT-4o | Распознавание имён спикеров (и заголовка, когда у источника нет своего названия) | ~$0.03 |
 | OpenAI GPT-4o | Краткий конспект (кнопка, опционально) | ~$0.04–0.07 |
 | **Итого** | без конспекта / с конспектом | **~$0.40 / ~$0.45–0.50** |
 
@@ -348,8 +348,8 @@ life-transcriber/
 │   │   └── callbacks.py         # кнопки «Краткий конспект» и «Скопировать»
 │   ├── services/
 │   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript (title + uploader)
-│   │   ├── source_meta.py       # SourceMetadata: title/uploader источника (yt-dlp/Yandex Music/Telegram)
-│   │   ├── formatter.py         # render_with_speakers (A/B → Спикер 1/2) + analyze_transcript: title/speakers через GPT-4o (title используется как fallback, если source_meta.title — хэш)
+│   │   ├── source_meta.py       # SourceMetadata: title/uploader источника + title_is_filename (имя файла — hint для GPT, не заголовок)
+│   │   ├── formatter.py         # render_with_speakers (A/B → Спикер 1/2) + analyze_transcript: title/speakers через GPT-4o (GPT-title используется, если source_meta.title — хэш или имя файла)
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект, chunking длинных текстов
 │   │   ├── instagram.py         # Instagram Reels через Cobalt API
 │   │   ├── facebook.py          # Facebook Videos/Reels через Cobalt API

@@ -10,3 +10,6 @@ class SourceMetadata:
 
     title: Optional[str] = None
     uploader: Optional[str] = None
+    # True when title is a raw filename (file-sharing link, uploaded document) —
+    # such titles are GPT hints, not trusted result titles.
+    title_is_filename: bool = False

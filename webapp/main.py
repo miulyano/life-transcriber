@@ -109,7 +109,9 @@ async def _process_upload(
                         reporter=reporter,
                         deliver_text=deliver_text,
                         user_id=user_id,
-                        source_meta=SourceMetadata(title=filename_hint or None),
+                        source_meta=SourceMetadata(
+                            title=filename_hint or None, title_is_filename=True
+                        ),
                         on_phase_change=on_phase_change,
                     )
                 except LimitExceededError as exc:

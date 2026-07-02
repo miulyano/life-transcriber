@@ -187,10 +187,12 @@ async def transcribe(
 ) -> FormattedTranscript:
     """Transcribe audio and return a fully formatted transcript ready to deliver.
 
-    If ``source_meta.title`` is a meaningful string (not an opaque id/hash), it
-    is used as the result title verbatim — GPT (``analyze_transcript``) is still
-    called to detect speaker names, but its title is discarded.  Otherwise the
-    GPT-generated title is used.
+    If ``source_meta.title`` is a meaningful string (not an opaque id/hash and
+    not a raw filename — ``source_meta.title_is_filename``), it is used as the
+    result title verbatim — GPT (``analyze_transcript``) is still called to
+    detect speaker names, but its title is discarded.  Otherwise the
+    GPT-generated title is used and ``source_meta.title`` serves only as a
+    hint for GPT (and a last-resort fallback).
 
     Phases emitted via ``on_phase``:
     - "Форматирую…" — when the GPT analysis step begins (title + speaker names).
@@ -226,7 +228,12 @@ async def _transcribe_inner(
 
     source_title = (source_meta.title or "").strip() if source_meta else ""
     uploader = (source_meta.uploader or "").strip() if source_meta else ""
-    prefer_original = bool(source_title) and not _is_hash_like_title(source_title)
+    title_is_filename = bool(source_meta and source_meta.title_is_filename)
+    prefer_original = (
+        bool(source_title)
+        and not title_is_filename
+        and not _is_hash_like_title(source_title)
+    )
 
     title = ""
     name_map: dict[str, str] = {}

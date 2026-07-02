@@ -34,7 +34,7 @@ async def process_tg_media(
 ) -> None:
     """Download a Telegram file, optionally extract audio, then transcribe."""
     user_id = message.from_user.id if message.from_user else 0
-    source_meta = SourceMetadata(title=filename_hint or None)
+    source_meta = SourceMetadata(title=filename_hint or None, title_is_filename=True)
     async with ProgressReporter(message, label) as reporter:
         media_path = await download_tg_file(bot, file_id, suffix)
         audio_path: str | None = None

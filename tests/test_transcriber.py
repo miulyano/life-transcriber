@@ -285,6 +285,50 @@ def test_is_hash_like_title():
 
 
 @pytest.mark.asyncio
+async def test_transcribe_prefers_gpt_title_over_filename(tmp_path, fake_polling, monkeypatch):
+    """A filename-sourced title (title_is_filename=True) is a hint, not the result title."""
+    from bot.services.source_meta import SourceMetadata
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    hints: list = []
+
+    async def _gpt(raw, utterances, hint):
+        hints.append(hint)
+        return "Пилот подкаста про AI", {}
+    monkeypatch.setattr(transcriber_module, "analyze_transcript", _gpt)
+
+    result = await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"),
+        source_meta=SourceMetadata(title="AI WAY_pilot v1.mp4", title_is_filename=True),
+    )
+
+    assert result.title == "Пилот подкаста про AI"
+    assert result.body.startswith("Пилот подкаста про AI\n\n")
+    # The filename is still passed to GPT as a hint.
+    assert hints == ["AI WAY_pilot v1.mp4"]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_filename_title_used_when_gpt_empty(tmp_path, fake_polling, monkeypatch):
+    """If GPT returns no title, the filename remains the last-resort fallback."""
+    from bot.services.source_meta import SourceMetadata
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    async def _gpt(raw, utterances, hint):
+        return "", {}
+    monkeypatch.setattr(transcriber_module, "analyze_transcript", _gpt)
+
+    result = await transcriber_module.transcribe(
+        str(tmp_path / "a.mp3"),
+        source_meta=SourceMetadata(title="AI WAY_pilot v1.mp4", title_is_filename=True),
+    )
+
+    assert result.title == "AI WAY_pilot v1.mp4"
+
+
+@pytest.mark.asyncio
 async def test_transcribe_title_falls_back_to_filename_on_error(tmp_path, fake_polling, monkeypatch):
     from bot.services.source_meta import SourceMetadata
     _submit_calls, holder = fake_polling

@@ -45,7 +45,7 @@ async def download_audio(url: str, output_dir: str) -> tuple[str, SourceMetadata
         raw_path, title = await download_from_yandex_disk(url, output_dir)
         try:
             audio = await extract_audio(raw_path, output_dir)
-            return audio, SourceMetadata(title=_clean(title))
+            return audio, SourceMetadata(title=_clean(title), title_is_filename=True)
         finally:
             if os.path.exists(raw_path):
                 os.unlink(raw_path)

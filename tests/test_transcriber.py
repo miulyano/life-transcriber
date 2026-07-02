@@ -377,9 +377,9 @@ async def test_transcribe_builds_timecoded_body(tmp_path, fake_polling):
     result = await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
 
     assert result.body_timecoded.startswith("Test Title\n\n")
-    assert "Спикер 1\n[0:00] Привет." in result.body_timecoded
-    assert "Спикер 2\n[0:03] Здравствуй." in result.body_timecoded
-    assert "[0:00]" not in result.body
+    assert "Спикер 1\n[0:00.000] Привет." in result.body_timecoded
+    assert "Спикер 2\n[0:03.000] Здравствуй." in result.body_timecoded
+    assert "[0:00.000]" not in result.body
 
 
 @pytest.mark.asyncio

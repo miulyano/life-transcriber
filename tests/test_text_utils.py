@@ -253,7 +253,7 @@ async def test_file_content_uses_file_text_variant():
     message.reply_document = AsyncMock()
 
     plain = "Заголовок\n\n" + "x" * 3000
-    timecoded = "Заголовок\n\n[0:00] " + "x" * 3000
+    timecoded = "Заголовок\n\n[0:00.000] " + "x" * 3000
     await reply_text_or_file(message, plain, timecoded)
 
     sent_file = message.reply_document.await_args.args[0]
@@ -274,7 +274,7 @@ async def test_inline_ignores_file_text():
     message.reply_document = AsyncMock()
 
     plain = "x" * 100
-    await reply_text_or_file(message, plain, "[0:00] " + "x" * 3000)
+    await reply_text_or_file(message, plain, "[0:00.000] " + "x" * 3000)
 
     message.reply.assert_awaited_once()
     message.reply_document.assert_not_called()
@@ -283,12 +283,17 @@ async def test_inline_ignores_file_text():
 
 def test_strip_timecodes_removes_leading_stamps():
     text = (
-        "Заголовок\n\nСпикер 1\n[0:00] Привет.\n[12:40] Середина.\n"
-        "[1:43:06] Поздняя реплика."
+        "Заголовок\n\nСпикер 1\n[0:00.000] Привет.\n[12:40.250] Середина.\n"
+        "[1:43:06.021] Поздняя реплика."
     )
     assert text_mod.strip_timecodes(text) == (
         "Заголовок\n\nСпикер 1\nПривет.\nСередина.\nПоздняя реплика."
     )
+
+
+def test_strip_timecodes_handles_legacy_format_without_millis():
+    text = "[0:00] Привет.\n[1:43:06] Поздняя реплика."
+    assert text_mod.strip_timecodes(text) == "Привет.\nПоздняя реплика."
 
 
 def test_strip_timecodes_keeps_mid_line_brackets():

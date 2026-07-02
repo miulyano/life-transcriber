@@ -112,57 +112,41 @@ def _tutt(speaker, text, start_ms=0, words=None):
 def test_timecodes_multi_label_on_own_line_and_blank_between_blocks():
     out = formatter.render_with_timecodes([
         _tutt("A", "Привет.", 0),
-        _tutt("B", "Здравствуй.", 3000),
+        _tutt("B", "Здравствуй.", 3250),
     ])
-    assert out == "Спикер 1\n[0:00] Привет.\n\nСпикер 2\n[0:03] Здравствуй."
+    assert out == "Спикер 1\n[0:00.000] Привет.\n\nСпикер 2\n[0:03.250] Здравствуй."
 
 
-def test_timecodes_multi_merges_adjacent_same_speaker():
+def test_timecodes_multi_same_speaker_each_utterance_own_line():
     out = formatter.render_with_timecodes([
         _tutt("A", "Раз.", 0),
         _tutt("A", "Два.", 3000),
         _tutt("B", "Три.", 6000),
     ])
-    assert out == "Спикер 1\n[0:00] Раз. Два.\n\nСпикер 2\n[0:06] Три."
-
-
-def test_timecodes_multi_same_speaker_new_stamp_after_interval():
-    out = formatter.render_with_timecodes([
-        _tutt("A", "Раз.", 0),
-        _tutt("A", "Два.", 20_000),
-        _tutt("B", "Три.", 40_000),
-    ])
-    assert out == "Спикер 1\n[0:00] Раз.\n[0:20] Два.\n\nСпикер 2\n[0:40] Три."
+    assert out == "Спикер 1\n[0:00.000] Раз.\n[0:03.000] Два.\n\nСпикер 2\n[0:06.000] Три."
 
 
 def test_timecodes_mono_no_labels():
     out = formatter.render_with_timecodes([
         _tutt("A", "Первый.", 0),
-        _tutt("A", "Второй.", 20_000),
-    ])
-    assert out == "[0:00] Первый.\n[0:20] Второй."
-
-
-def test_timecodes_mono_below_interval_stays_on_one_line():
-    out = formatter.render_with_timecodes([
-        _tutt("A", "Первый.", 0),
         _tutt("A", "Второй.", 5000),
     ])
-    assert out == "[0:00] Первый. Второй."
+    assert out == "[0:00.000] Первый.\n[0:05.000] Второй."
 
 
-def test_timecodes_subsplit_on_sentence_boundary_after_interval():
+def test_timecodes_every_sentence_gets_own_stamped_line():
     words = [
         _tw("Раз", 0),
         _tw("два", 1000),
         _tw("три.", 2000),
-        _tw("Четыре", 16_000),
-        _tw("пять.", 17_000),
+        _tw("Четыре", 3100),
+        _tw("пять.", 4000),
+        _tw("Шесть.", 5500),
     ]
     out = formatter.render_with_timecodes(
-        [_tutt("A", "Раз два три. Четыре пять.", 0, words=words)]
+        [_tutt("A", "Раз два три. Четыре пять. Шесть.", 0, words=words)]
     )
-    assert out == "[0:00] Раз два три.\n[0:16] Четыре пять."
+    assert out == "[0:00.000] Раз два три.\n[0:03.100] Четыре пять.\n[0:05.500] Шесть."
 
 
 def test_timecodes_never_split_mid_sentence():
@@ -175,17 +159,17 @@ def test_timecodes_never_split_mid_sentence():
     out = formatter.render_with_timecodes(
         [_tutt("A", "раз два три конец.", 0, words=words)]
     )
-    assert out == "[0:00] раз два три конец."
+    assert out == "[0:00.000] раз два три конец."
 
 
-def test_timecodes_hour_format():
-    out = formatter.render_with_timecodes([_tutt("A", "Поздний текст.", 3_700_000)])
-    assert out == "[1:01:40] Поздний текст."
+def test_timecodes_hour_format_with_millis():
+    out = formatter.render_with_timecodes([_tutt("A", "Поздний текст.", 3_700_250)])
+    assert out == "[1:01:40.250] Поздний текст."
 
 
 def test_timecodes_utterance_without_words_gets_single_stamp():
     out = formatter.render_with_timecodes([_tutt("A", "Длинная реплика без слов.", 42_000)])
-    assert out == "[0:42] Длинная реплика без слов."
+    assert out == "[0:42.000] Длинная реплика без слов."
 
 
 def test_timecodes_empty_returns_empty():
@@ -198,7 +182,7 @@ def test_timecodes_skips_blank_utterances():
         _tutt("B", "   ", 1000),
         _tutt("A", "Ещё.", 2000),
     ])
-    assert out == "Спикер 1\n[0:00] Реплика. Ещё."
+    assert out == "Спикер 1\n[0:00.000] Реплика.\n[0:02.000] Ещё."
 
 
 def test_timecodes_name_map_and_order_match_render_with_speakers():
@@ -206,7 +190,7 @@ def test_timecodes_name_map_and_order_match_render_with_speakers():
         [_tutt("B", "Б.", 0), _tutt("A", "А.", 2000)],
         name_map={"A": "Иван"},
     )
-    assert out == "Спикер 1\n[0:00] Б.\n\nИван\n[0:02] А."
+    assert out == "Спикер 1\n[0:00.000] Б.\n\nИван\n[0:02.000] А."
 
 
 # ---------- analyze_transcript ----------

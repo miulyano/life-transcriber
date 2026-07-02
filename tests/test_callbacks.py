@@ -82,7 +82,7 @@ async def test_extract_document_strips_timecodes():
     doc.file_id = "file_tc"
     cb = _make_callback(document=doc)
     cb.bot.download.return_value = BytesIO(
-        "Заголовок\n\nСпикер 1\n[0:00] Привет.\n[0:20] Ещё.".encode("utf-8")
+        "Заголовок\n\nСпикер 1\n[0:00.000] Привет.\n[0:20.500] Ещё.".encode("utf-8")
     )
 
     result = await _extract_text_from_message(cb)
@@ -149,7 +149,7 @@ async def test_handle_summary_fallback_document_with_timecodes():
     cb = _make_callback(document=doc)
     cb.data = "summary:nonexistent_hash"
     cb.bot.download.return_value = BytesIO(
-        "Заголовок\n\n[0:00] Привет.\n[0:20] Пока.".encode("utf-8")
+        "Заголовок\n\n[0:00.000] Привет.\n[0:20.500] Пока.".encode("utf-8")
     )
     cb.message.reply = AsyncMock()
 
@@ -166,7 +166,7 @@ async def test_handle_cleanup_fallback_document_with_timecodes():
     cb = _make_callback(document=doc)
     cb.data = "cleanup:nonexistent_hash"
     cb.bot.download.return_value = BytesIO(
-        "Заголовок\n\nСпикер 1\n[0:00] Ну это текст.".encode("utf-8")
+        "Заголовок\n\nСпикер 1\n[0:00.000] Ну это текст.".encode("utf-8")
     )
     cb.message.reply_document = AsyncMock()
 

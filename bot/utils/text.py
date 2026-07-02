@@ -22,12 +22,13 @@ from bot.utils.filename import (
 TELEGRAM_CAPTION_LIMIT = 1024
 CHANNEL_LINE_PREFIX = "📺 Канал: "
 
-# [0:15] / [12:40] / [1:43:06] at the start of a line (timecoded file variant)
-TIMECODE_RE = re.compile(r"^\[\d{1,2}(?::\d{2}){1,2}\] ", re.MULTILINE)
+# [0:15.250] / [1:43:06.021] at the start of a line (timecoded file variant);
+# the .mmm part is optional for files produced by older versions.
+TIMECODE_RE = re.compile(r"^\[\d{1,2}(?::\d{2}){1,2}(?:\.\d{3})?\] ", re.MULTILINE)
 
 
 def strip_timecodes(text: str) -> str:
-    """Remove leading [m:ss] / [h:mm:ss] stamps from a timecoded transcript."""
+    """Remove leading [m:ss.mmm] / [h:mm:ss.mmm] stamps from a timecoded transcript."""
     return TIMECODE_RE.sub("", text)
 
 # In-memory store: {hash: (text, timestamp)}

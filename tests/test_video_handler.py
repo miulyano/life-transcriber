@@ -46,7 +46,7 @@ async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
         await reporter.set_phase("Отправляю результат…")
         await deliver_text("transcript")
 
-    async def fake_reply_text_or_file(_message, text):
+    async def fake_reply_text_or_file(_message, text, file_text=None):
         events.append(("reply", text))
 
     monkeypatch.setattr(_tg_media.settings, "TEMP_DIR", str(tmp_path))

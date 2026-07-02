@@ -246,6 +246,56 @@ async def test_inline_short_with_header_formats_html():
     )
 
 
+async def test_file_content_uses_file_text_variant():
+    """Document body comes from file_text; caption/keyboard/cache from plain text."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    plain = "Заголовок\n\n" + "x" * 3000
+    timecoded = "Заголовок\n\n[0:00] " + "x" * 3000
+    await reply_text_or_file(message, plain, timecoded)
+
+    sent_file = message.reply_document.await_args.args[0]
+    assert sent_file.data.decode("utf-8") == timecoded
+    caption = message.reply_document.await_args.kwargs["caption"]
+    assert caption == "<b>Заголовок</b>"
+    # Cache (summary/cleanup source) keeps the plain variant.
+    keyboard = message.reply_document.await_args.kwargs["reply_markup"]
+    summary_cb = keyboard.inline_keyboard[0][0].callback_data
+    h = summary_cb.split(":", 1)[1]
+    assert get_cached_text(h) == plain
+
+
+async def test_inline_ignores_file_text():
+    """Threshold is decided by plain text; short plain goes inline without stamps."""
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    plain = "x" * 100
+    await reply_text_or_file(message, plain, "[0:00] " + "x" * 3000)
+
+    message.reply.assert_awaited_once()
+    message.reply_document.assert_not_called()
+    assert message.reply.await_args.args[0] == plain
+
+
+def test_strip_timecodes_removes_leading_stamps():
+    text = (
+        "Заголовок\n\nСпикер 1\n[0:00] Привет.\n[12:40] Середина.\n"
+        "[1:43:06] Поздняя реплика."
+    )
+    assert text_mod.strip_timecodes(text) == (
+        "Заголовок\n\nСпикер 1\nПривет.\nСередина.\nПоздняя реплика."
+    )
+
+
+def test_strip_timecodes_keeps_mid_line_brackets():
+    text = "Смотри [12:34] в записи."
+    assert text_mod.strip_timecodes(text) == text
+
+
 async def test_reply_caches_text_via_copy_button():
     """After reply_text_or_file, text is retrievable via copy button hash (inline text > 256 chars)."""
     message = MagicMock()

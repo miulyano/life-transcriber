@@ -23,8 +23,8 @@ def _fake_raw(utterances, *, text=None, language="ru", status="completed", error
     )
 
 
-def _utt(speaker, text, start=0, end=0):
-    return SimpleNamespace(speaker=speaker, text=text, start=start, end=end)
+def _utt(speaker, text, start=0, end=0, words=None):
+    return SimpleNamespace(speaker=speaker, text=text, start=start, end=end, words=words)
 
 
 def _make_status(status_str: str, utterances, *, text=None, language="ru", error=None):
@@ -362,6 +362,69 @@ async def test_transcribe_single_speaker_calls_split_when_no_paragraphs(tmp_path
 
     await transcriber_module.transcribe(str(tmp_path / "b.mp3"))
     assert len(split_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_transcribe_builds_timecoded_body(tmp_path, fake_polling):
+    """body_timecoded carries [m:ss] stamps; plain body stays clean."""
+    _submit_calls, holder = fake_polling
+    utterances = [
+        _utt("A", "Привет.", start=0, end=1000),
+        _utt("B", "Здравствуй.", start=3000, end=4000),
+    ]
+    holder["statuses"] = [_make_status("completed", utterances)]
+
+    result = await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
+
+    assert result.body_timecoded.startswith("Test Title\n\n")
+    assert "Спикер 1\n[0:00] Привет." in result.body_timecoded
+    assert "Спикер 2\n[0:03] Здравствуй." in result.body_timecoded
+    assert "[0:00]" not in result.body
+
+
+@pytest.mark.asyncio
+async def test_transcribe_timecoded_falls_back_to_body_without_utterances(tmp_path, fake_polling):
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [], text="сплошной текст")]
+
+    result = await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
+
+    assert result.body_timecoded == result.body
+
+
+@pytest.mark.asyncio
+async def test_transcribe_applies_custom_spelling_to_timecoded(tmp_path, fake_polling, monkeypatch):
+    _submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "Это ассемблиай.")])]
+    monkeypatch.setattr(
+        transcriber_module, "_CUSTOM_SPELLING", {"ассемблиай": "AssemblyAI"}
+    )
+
+    result = await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
+
+    assert "AssemblyAI" in result.body_timecoded
+    assert "ассемблиай" not in result.body_timecoded
+
+
+def test_utterances_from_response_captures_words():
+    words = [
+        SimpleNamespace(text="Привет,", start=100, end=500),
+        SimpleNamespace(text="мир.", start=600, end=900),
+    ]
+    raw = _fake_raw(
+        [SimpleNamespace(speaker="A", text="Привет, мир.", start=100, end=900, words=words)]
+    )
+    out = transcriber_module._utterances_from_response(raw)
+    assert out[0].words == [
+        transcriber_module.Word(text="Привет,", start_ms=100, end_ms=500),
+        transcriber_module.Word(text="мир.", start_ms=600, end_ms=900),
+    ]
+
+
+def test_utterances_from_response_tolerates_missing_words():
+    raw = _fake_raw([_utt("A", "ok")])
+    out = transcriber_module._utterances_from_response(raw)
+    assert out[0].words == []
 
 
 @pytest.mark.asyncio

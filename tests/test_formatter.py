@@ -96,6 +96,119 @@ def test_render_falls_back_to_speaker_n_for_unknown_label():
     assert "Спикер 2: Текст Б." in out
 
 
+# ---------- render_with_timecodes ----------
+
+
+def _tw(text, start_ms):
+    return SimpleNamespace(text=text, start_ms=start_ms, end_ms=start_ms)
+
+
+def _tutt(speaker, text, start_ms=0, words=None):
+    return SimpleNamespace(
+        speaker=speaker, text=text, start_ms=start_ms, end_ms=start_ms, words=words or []
+    )
+
+
+def test_timecodes_multi_label_on_own_line_and_blank_between_blocks():
+    out = formatter.render_with_timecodes([
+        _tutt("A", "Привет.", 0),
+        _tutt("B", "Здравствуй.", 3000),
+    ])
+    assert out == "Спикер 1\n[0:00] Привет.\n\nСпикер 2\n[0:03] Здравствуй."
+
+
+def test_timecodes_multi_merges_adjacent_same_speaker():
+    out = formatter.render_with_timecodes([
+        _tutt("A", "Раз.", 0),
+        _tutt("A", "Два.", 3000),
+        _tutt("B", "Три.", 6000),
+    ])
+    assert out == "Спикер 1\n[0:00] Раз. Два.\n\nСпикер 2\n[0:06] Три."
+
+
+def test_timecodes_multi_same_speaker_new_stamp_after_interval():
+    out = formatter.render_with_timecodes([
+        _tutt("A", "Раз.", 0),
+        _tutt("A", "Два.", 20_000),
+        _tutt("B", "Три.", 40_000),
+    ])
+    assert out == "Спикер 1\n[0:00] Раз.\n[0:20] Два.\n\nСпикер 2\n[0:40] Три."
+
+
+def test_timecodes_mono_no_labels():
+    out = formatter.render_with_timecodes([
+        _tutt("A", "Первый.", 0),
+        _tutt("A", "Второй.", 20_000),
+    ])
+    assert out == "[0:00] Первый.\n[0:20] Второй."
+
+
+def test_timecodes_mono_below_interval_stays_on_one_line():
+    out = formatter.render_with_timecodes([
+        _tutt("A", "Первый.", 0),
+        _tutt("A", "Второй.", 5000),
+    ])
+    assert out == "[0:00] Первый. Второй."
+
+
+def test_timecodes_subsplit_on_sentence_boundary_after_interval():
+    words = [
+        _tw("Раз", 0),
+        _tw("два", 1000),
+        _tw("три.", 2000),
+        _tw("Четыре", 16_000),
+        _tw("пять.", 17_000),
+    ]
+    out = formatter.render_with_timecodes(
+        [_tutt("A", "Раз два три. Четыре пять.", 0, words=words)]
+    )
+    assert out == "[0:00] Раз два три.\n[0:16] Четыре пять."
+
+
+def test_timecodes_never_split_mid_sentence():
+    words = [
+        _tw("раз", 0),
+        _tw("два", 16_000),
+        _tw("три", 17_000),
+        _tw("конец.", 18_000),
+    ]
+    out = formatter.render_with_timecodes(
+        [_tutt("A", "раз два три конец.", 0, words=words)]
+    )
+    assert out == "[0:00] раз два три конец."
+
+
+def test_timecodes_hour_format():
+    out = formatter.render_with_timecodes([_tutt("A", "Поздний текст.", 3_700_000)])
+    assert out == "[1:01:40] Поздний текст."
+
+
+def test_timecodes_utterance_without_words_gets_single_stamp():
+    out = formatter.render_with_timecodes([_tutt("A", "Длинная реплика без слов.", 42_000)])
+    assert out == "[0:42] Длинная реплика без слов."
+
+
+def test_timecodes_empty_returns_empty():
+    assert formatter.render_with_timecodes([]) == ""
+
+
+def test_timecodes_skips_blank_utterances():
+    out = formatter.render_with_timecodes([
+        _tutt("A", "Реплика.", 0),
+        _tutt("B", "   ", 1000),
+        _tutt("A", "Ещё.", 2000),
+    ])
+    assert out == "Спикер 1\n[0:00] Реплика. Ещё."
+
+
+def test_timecodes_name_map_and_order_match_render_with_speakers():
+    out = formatter.render_with_timecodes(
+        [_tutt("B", "Б.", 0), _tutt("A", "А.", 2000)],
+        name_map={"A": "Иван"},
+    )
+    assert out == "Спикер 1\n[0:00] Б.\n\nИван\n[0:02] А."
+
+
 # ---------- analyze_transcript ----------
 
 

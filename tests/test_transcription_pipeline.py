@@ -52,8 +52,8 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
         events.append(("transcribe", path, source_meta))
         return _result(body="T\n\nСпикер 1: hi")
 
-    async def fake_deliver(text):
-        events.append(("deliver", text))
+    async def fake_deliver(text, file_text=None):
+        events.append(("deliver", text, file_text))
 
     async def fake_phase_change(label):
         events.append(("phase-change", label))
@@ -75,7 +75,7 @@ async def test_pipeline_calls_transcribe_then_delivers_body(monkeypatch):
     assert events == [
         ("transcribe", "/tmp/audio.mp3", meta),
         ("phase-change", "Отправляю результат…"),
-        ("deliver", "T\n\nСпикер 1: hi"),
+        ("deliver", "T\n\nСпикер 1: hi", None),
     ]
     assert reporter.events == [
         ("phase", "Отправляю результат…"),

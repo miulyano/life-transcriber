@@ -100,8 +100,8 @@ async def _process_upload(
                         ) - transcribe_started_at
                         timings["delivery_started_at"] = now
 
-                async def deliver_text(text: str) -> None:
-                    await send_transcript_to_chat(bot, user_id, text)
+                async def deliver_text(text: str, file_text: str | None = None) -> None:
+                    await send_transcript_to_chat(bot, user_id, text, file_text)
 
                 try:
                     await run_transcription_pipeline(

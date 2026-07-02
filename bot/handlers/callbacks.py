@@ -10,7 +10,7 @@ from bot.services.summarizer import cleanup_transcript, summarize
 from bot.utils.filename import build_filename, extract_title, split_header_and_body
 from bot.utils.markdown import markdown_to_telegram_html
 from bot.utils.progress import ProgressReporter
-from bot.utils.text import _store_text, get_cached_text
+from bot.utils.text import _store_text, get_cached_text, strip_timecodes
 
 router = Router()
 
@@ -23,7 +23,8 @@ async def _extract_text_from_message(callback: CallbackQuery) -> Optional[str]:
         return msg.text
     if msg.document:
         bio = await callback.bot.download(msg.document.file_id)
-        return bio.read().decode("utf-8")
+        # The .txt may be the timecoded variant — GPT input must stay clean.
+        return strip_timecodes(bio.read().decode("utf-8"))
     return None
 
 

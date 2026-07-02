@@ -15,7 +15,7 @@ class Reporter(Protocol):
     async def set_progress_fraction(self, fraction: float) -> None: ...
 
 
-DeliverText = Callable[[str], Awaitable[None]]
+DeliverText = Callable[[str, Optional[str]], Awaitable[None]]
 PhaseCallback = Callable[[str], Awaitable[None]]
 
 
@@ -55,4 +55,4 @@ async def run_transcription_pipeline(
     if on_phase_change is not None:
         await on_phase_change("Отправляю результат…")
     await reporter.set_phase("Отправляю результат…")
-    await deliver_text(result.body)
+    await deliver_text(result.body, result.body_timecoded or None)

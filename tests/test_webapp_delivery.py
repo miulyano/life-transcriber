@@ -27,6 +27,16 @@ async def test_short_text_sends_message(mock_bot):
 
 
 @pytest.mark.asyncio
+async def test_long_text_document_uses_file_text(mock_bot):
+    text = "а" * 2001
+    file_text = "[0:00] " + "а" * 2001
+    await send_transcript_to_chat(mock_bot, chat_id=333, text=text, file_text=file_text)
+
+    doc = mock_bot.send_document.call_args.args[1]
+    assert doc.data.decode("utf-8") == file_text
+
+
+@pytest.mark.asyncio
 async def test_long_text_sends_document(mock_bot):
     # 2001 chars > LONG_TEXT_THRESHOLD (2000)
     text = "а" * 2001

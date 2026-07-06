@@ -21,9 +21,11 @@ from assemblyai import api as _aai_api
 from bot.config import settings
 from bot.services.formatter import (
     PARA_SPLIT_THRESHOLD,
+    TimecodeSegment,
     analyze_transcript,
+    build_timecode_segments,
+    render_timecode_segments,
     render_with_speakers,
-    render_with_timecodes,
     split_into_paragraphs,
 )
 from bot.services.source_meta import SourceMetadata
@@ -82,6 +84,7 @@ class FormattedTranscript:
     audio_duration_sec: float = 0.0
     uploader: Optional[str] = None
     body_timecoded: str = ""  # same as body but with [m:ss] stamps (file variant)
+    timecode_segments: list[TimecodeSegment] = field(default_factory=list)
 
 
 # Loaded once at import — restart the bot to pick up edits to the data files.
@@ -257,9 +260,12 @@ async def _transcribe_inner(
     if speaker_count == 1 and "\n\n" not in body_text and len(body_text) > PARA_SPLIT_THRESHOLD:
         body_text = await split_into_paragraphs(body_text)
 
-    # Word texts skipped custom_spelling above, so apply it to the rendered result.
-    timecoded_text = render_with_timecodes(utterances, name_map) if utterances else ""
-    timecoded_text = apply_custom_spelling(timecoded_text, _CUSTOM_SPELLING)
+    # Word texts skipped custom_spelling above, so apply it per segment; the
+    # rendered file variant and the persisted segments stay identical.
+    segments = build_timecode_segments(utterances, name_map) if utterances else []
+    for seg in segments:
+        seg.text = apply_custom_spelling(seg.text, _CUSTOM_SPELLING)
+    timecoded_text = render_timecode_segments(segments)
 
     header = _build_header(title, uploader or None)
     if header and body_text:
@@ -284,4 +290,5 @@ async def _transcribe_inner(
         audio_duration_sec=audio_duration_sec,
         uploader=(uploader or None),
         body_timecoded=body_timecoded,
+        timecode_segments=segments,
     )

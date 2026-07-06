@@ -1,12 +1,13 @@
 from bot.config import Settings
 
 
-def _make(user_ids: str) -> Settings:
+def _make(user_ids: str, **kwargs) -> Settings:
     return Settings(
         BOT_TOKEN="t",
         OPENAI_API_KEY="k",
         ASSEMBLYAI_API_KEY="aai",
         ALLOWED_USER_IDS=user_ids,
+        **kwargs,
     )
 
 
@@ -41,3 +42,25 @@ def test_defaults():
     assert s.COBALT_API_URL == "http://cobalt:9000"
     assert s.YTDLP_PROXY is None
     assert s.YANDEX_MUSIC_PROXY is None
+    assert s.TRANSCRIPTS_DB_FILE == "data/transcripts.db"
+    assert s.TRANSCRIPTS_DIR == "data/transcripts"
+    assert s.API_TOKENS == ""
+
+
+def test_api_tokens_empty_by_default():
+    assert _make("111").api_tokens == {}
+
+
+def test_api_tokens_parsed():
+    s = _make("111", API_TOKENS="tok1:111,tok2:222")
+    assert s.api_tokens == {"tok1": 111, "tok2": 222}
+
+
+def test_api_tokens_spaces_and_trailing_comma():
+    s = _make("111", API_TOKENS=" tok1 : 111 , tok2:222 ,")
+    assert s.api_tokens == {"tok1": 111, "tok2": 222}
+
+
+def test_api_tokens_malformed_entries_skipped():
+    s = _make("111", API_TOKENS="justtoken,tok1:notanint,tok2:222,:333")
+    assert s.api_tokens == {"tok2": 222}

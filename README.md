@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.7.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -28,6 +28,10 @@ Universal-2 (с акустической диаризацией спикеров
 - 🧹 **Очистка полной транскрибации** — у транскрибаций, которые приходят `.txt`-файлом, есть кнопка «Очистить текст»: бот убирает слова-паразиты, повторы, паузы и грязные формулировки, сохраняя исходную структуру и смысл
 - ⏳ **Интерактивный статус** — во время обработки присылается одно сообщение с анимированным прогресс-баром и фазами («Скачиваю…» → «Транскрибирую…» → «Отправляю результат…»); тот же бар показывается для «Делаю краткий конспект…» и «Очищаю текст…» с прогрессом по чанкам N/M; сообщение удаляется, когда результат отправлен, или превращается в текст ошибки, если что-то сломалось
 - 🔤 **Word boost для специфичных терминов** — список доменных слов (имена, бренды, технические термины) поднимает точность распознавания. Поддерживается до ~1000 слов на запрос; редактируется в `bot/data/word_boost.txt` без пересборки образа (директория монтируется как volume).
+- 🕒 **Выбор формата до генерации** — получив ссылку или медиа, бот спрашивает «С таймкодами / Без таймкодов»; транскрибация стартует после нажатия. В форме Mini App — переключатель «Таймкоды в файле»
+- 💾 **Хранение генераций** — каждая готовая транскрибация сохраняется на сервере (SQLite + `.txt` без таймкодов + JSON с таймингами предложений); версия с таймкодами рендерится по запросу
+- 🗂 **Вкладка «Мои записи» в Mini App** — список своих генераций: скачать `.txt`, переслать в чат (обычную или с таймкодами), удалить вместе с файлом
+- 🤖 **REST API для агентов** — список/скачивание/удаление/пересылка генераций по bearer-токену (`API_TOKENS`); каждый пользователь видит только свои записи
 
 **Формат ответа:**
 - Короткий текст (≤ 2000 символов) — приходит прямо в чате
@@ -130,6 +134,9 @@ ALLOWED_USER_IDS=123456789,987654321
 - `YTDLP_PROXY=` — опциональный proxy для всех скачиваний через `yt-dlp`
 - `YANDEX_MUSIC_PROXY=` — proxy только для Яндекс Музыки; нужен, если VPS получает HTTP 451 из-за региона
 - `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «📤 Загрузить файл» (требует shared Caddy на VPS, см. ниже)
+- `API_TOKENS=` — bearer-токены для REST API в формате `token1:user_id1,token2:user_id2`; токен даёт доступ только к генерациям замапленного пользователя
+- `TRANSCRIPTS_DB_FILE=data/transcripts.db` — SQLite с метаданными сохранённых транскрибаций
+- `TRANSCRIPTS_DIR=data/transcripts` — директория с `.txt`/`.json` файлами генераций
 
 ### 4. Запусти через Docker
 
@@ -162,7 +169,9 @@ Run polling for bot @YourBotName
 - Вставь **ссылку на конкретный выпуск подкаста Яндекс Музыки** (`music.yandex.ru/album/.../track/...`) → получи текст
 - Под любой транскрибацией нажми **«📝 Краткий конспект»** → получи тезисы
 - Под транскрибацией, которая пришла `.txt`-файлом, нажми **«🧹 Очистить текст»** → получи полную очищенную версию в том же порядке и формате блоков, файл придёт с подписью `Очищенный текст: <Заголовок>`
+- После отправки ссылки или медиа бот спросит **«С таймкодами / Без таймкодов»** — транскрибация стартует по нажатию
 - Нажми кнопку **«📤 Загрузить файл»** в меню бота → загрузи любой файл без ограничений → получи текст (требует `WEBAPP_URL` и shared Caddy)
+- Во вкладке **«Мои записи»** Mini App — все сохранённые генерации: скачай `.txt`, перешли в чат (обычную или с таймкодами) или удали
 
 ## Деплой на VPS
 
@@ -242,6 +251,38 @@ Telegram Bot API позволяет боту скачивать файлы то�
 - Домен с A-записью на VPS
 - Shared Caddy развёрнут на VPS (см. «VPS: shared Caddy»)
 - `WEBAPP_URL=https://transcriber.yourdomain.com` в `.env`
+
+## REST API транскрибаций
+
+Webapp отдаёт REST API для управления сохранёнными генерациями — как для вкладки
+«Мои записи» в Mini App (auth через `X-Telegram-Init-Data` header), так и для
+внешних агентов (bearer-токен из `API_TOKENS`).
+
+Каждый пользователь видит только свои генерации; чужой или несуществующий id
+всегда даёт `404`. Без auth — `401`.
+
+```bash
+BASE=https://transcriber.<your-domain>
+TOKEN=<your-api-key>
+
+# Список своих генераций (новые сверху)
+curl -H "Authorization: Bearer $TOKEN" $BASE/api/transcripts
+
+# Скачать конкретную генерацию .txt-файлом
+curl -OJ -H "Authorization: Bearer $TOKEN" $BASE/api/transcripts/<id>/file
+
+# Переслать генерацию в чат бота (обычная / с таймкодами)
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"timecoded": false}' $BASE/api/transcripts/<id>/resend
+
+# Удалить генерацию (вместе с файлами на диске)
+curl -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/api/transcripts/<id>
+```
+
+Хранилище: метаданные в SQLite (`data/transcripts.db`, WAL), контент в
+`data/transcripts/<id>.txt` (без таймкодов) и `<id>.json` (тайминги предложений).
+Бот и webapp пишут в одну БД через общий volume — это рассчитано на локальный
+диск одной машины; на сетевых ФС (NFS и т.п.) SQLite в таком режиме не работает.
 
 ## VPS: shared Caddy (reverse proxy для всех проектов)
 
@@ -341,11 +382,13 @@ life-transcriber/
 │   ├── main.py                  # Точка входа; ставит menu button если WEBAPP_URL задан
 │   ├── config.py                # Pydantic Settings (читает .env)
 │   ├── handlers/
-│   │   ├── voice.py             # voice + video_note (кружочки)
-│   │   ├── video.py             # видео-файлы и document/video
-│   │   ├── links.py             # URL → yt-dlp → transcribe
+│   │   ├── voice.py             # voice + video_note (кружочки) → вопрос «с таймкодами/без»
+│   │   ├── video.py             # видео-файлы и document/video → вопрос «с таймкодами/без»
+│   │   ├── links.py             # URL → вопрос → yt-dlp → transcribe (process_link)
+│   │   ├── _tg_media.py         # скачивание Telegram-файла + запуск пайплайна (process_tg_media)
+│   │   ├── _timecode_prompt.py  # ask_timecodes: регистрирует pending job + клавиатура вопроса
 │   │   ├── commands.py          # /start, /limit
-│   │   └── callbacks.py         # кнопки «Краткий конспект» и «Скопировать»
+│   │   └── callbacks.py         # кнопки «Краткий конспект», «Скопировать», выбор tc:
 │   ├── services/
 │   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript (title + uploader)
 │   │   ├── source_meta.py       # SourceMetadata: title/uploader источника + title_is_filename (имя файла — hint для GPT, не заголовок)
@@ -360,7 +403,9 @@ life-transcriber/
 │   │   ├── media.py             # Подготовка audio-only MP3 через FFmpeg
 │   │   ├── stream_download.py   # Общая потоковая запись HTTP-скачиваний во временный файл
 │   │   ├── word_boost.py        # load_word_boost / load_custom_spelling / apply_custom_spelling
-│   │   ├── transcription_pipeline.py # Общий flow: pre-check лимита → transcribe → списание расхода → deliver
+│   │   ├── transcription_pipeline.py # Общий flow: pre-check лимита → transcribe → списание → сохранение → deliver
+│   │   ├── transcript_store.py  # Персистентное хранилище генераций: SQLite + .txt/.json файлы
+│   │   ├── pending_jobs.py      # In-memory реестр задач, ждущих выбора «с таймкодами/без» (TTL 1 ч)
 │   │   ├── usage_store.py       # Per-user месячные лимиты часов + расход (JSON-стор)
 │   │   ├── temp_cleanup.py      # Периодическая очистка старых файлов из TEMP_DIR
 │   │   ├── user_facing_error.py # Типизированные provider-ошибки без потери старого текста
@@ -380,12 +425,14 @@ life-transcriber/
 ├── webapp/                      # Telegram Mini App (FastAPI)
 │   ├── main.py                  # FastAPI app; POST /api/upload; static mount
 │   ├── auth.py                  # validate_init_data: HMAC-SHA256 по BOT_TOKEN
+│   ├── deps.py                  # resolve_user_id: bearer-токен или initData-header
+│   ├── transcripts_api.py       # REST API: list / file / delete / resend
 │   ├── delivery.py              # send_transcript_to_chat(bot, chat_id, text)
 │   ├── Dockerfile
 │   └── static/
-│       ├── index.html           # TWA UI с tg-theme CSS vars
-│       └── app.js               # fetch upload + Telegram.WebApp.close()
-├── data/                        # (gitignored) writable runtime state: usage.json
+│       ├── index.html           # TWA UI: вкладки «Загрузить» / «Мои записи»
+│       └── app.js               # upload + список генераций (скачать/в чат/удалить)
+├── data/                        # (gitignored) writable runtime state: usage.json, transcripts.db, transcripts/
 ├── tests/                       # pytest
 ├── Dockerfile                   # для bot-сервиса
 ├── docker-compose.yml           # сервисы: bot, cobalt, webapp
@@ -409,7 +456,9 @@ pytest -v
 
 Покрыта ключевая логика: парсинг конфига, whitelist-авторизация, кэш текстов с TTL,
 порог inline/file, URL regex, chunked-конспекты, HMAC-валидация Mini App initData,
-доставка транскрибации, cleanup временных файлов.
+доставка транскрибации, cleanup временных файлов, хранилище генераций
+(SQLite + файлы, изоляция по user_id), REST API транскрибаций (двойная auth),
+pending-реестр выбора таймкодов.
 
 ## Правила разработки
 

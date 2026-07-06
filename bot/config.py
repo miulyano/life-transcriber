@@ -1,7 +1,10 @@
+import logging
 from functools import cached_property
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -32,10 +35,30 @@ class Settings(BaseSettings):
     WEBAPP_URL: Optional[str] = None  # https://transcriber.<domain> — enables bot menu button
     LIMITS_FILE: str = "bot/data/user_limits.json"
     USAGE_FILE: str = "data/usage.json"
+    TRANSCRIPTS_DB_FILE: str = "data/transcripts.db"
+    TRANSCRIPTS_DIR: str = "data/transcripts"
+    API_TOKENS: str = ""  # "token1:user_id1,token2:user_id2" — bearer tokens for the REST API
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:
         return [int(uid.strip()) for uid in self.ALLOWED_USER_IDS.split(",") if uid.strip()]
+
+    @cached_property
+    def api_tokens(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for entry in self.API_TOKENS.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            token, sep, user_id = entry.partition(":")
+            token = token.strip()
+            try:
+                if not sep or not token:
+                    raise ValueError
+                out[token] = int(user_id.strip())
+            except ValueError:
+                logger.warning("Skipping malformed API_TOKENS entry (expected token:user_id)")
+        return out
 
 
 settings = Settings()

@@ -31,6 +31,8 @@ async def process_tg_media(
     label: str,
     extract_audio_first: bool = False,
     filename_hint: str | None = None,
+    source_type: str = "unknown",
+    timecodes: bool = True,
 ) -> None:
     """Download a Telegram file, optionally extract audio, then transcribe."""
     user_id = message.from_user.id if message.from_user else 0
@@ -49,7 +51,7 @@ async def process_tg_media(
                 transcribe_path = media_path
 
             async def deliver_text(text: str, file_text: str | None = None) -> None:
-                await reply_text_or_file(message, text, file_text)
+                await reply_text_or_file(message, text, file_text if timecodes else None)
 
             try:
                 await run_transcription_pipeline(
@@ -58,6 +60,7 @@ async def process_tg_media(
                     deliver_text=deliver_text,
                     user_id=user_id,
                     source_meta=source_meta,
+                    source_type=source_type,
                 )
             except LimitExceededError as exc:
                 limit_exceeded = exc

@@ -23,6 +23,7 @@ from bot.services.usage_store import LimitExceededError, format_limit_exceeded_m
 from bot.utils.progress import ProgressReporter
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
+from webapp.transcripts_api import router as transcripts_router
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _file_size(path: str) -> int | None:
 
 
 async def _process_upload(
-    dest: str, user_id: int, filename_hint: str | None = None
+    dest: str, user_id: int, filename_hint: str | None = None, timecodes: bool = True
 ) -> None:
     """Transcribe file and deliver result to chat. Runs as a background task."""
     bot = Bot(
@@ -101,7 +102,9 @@ async def _process_upload(
                         timings["delivery_started_at"] = now
 
                 async def deliver_text(text: str, file_text: str | None = None) -> None:
-                    await send_transcript_to_chat(bot, user_id, text, file_text)
+                    await send_transcript_to_chat(
+                        bot, user_id, text, file_text if timecodes else None
+                    )
 
                 try:
                     await run_transcription_pipeline(
@@ -113,6 +116,7 @@ async def _process_upload(
                             title=filename_hint or None, title_is_filename=True
                         ),
                         on_phase_change=on_phase_change,
+                        source_type="webapp",
                     )
                 except LimitExceededError as exc:
                     await reporter.fail(format_limit_exceeded_message(exc.limit_hours))
@@ -151,6 +155,7 @@ async def _process_upload(
 async def upload(
     file: UploadFile,
     init_data: str = Form(...),
+    timecodes: bool = Form(True),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> dict:
     # --- Auth ---
@@ -185,9 +190,11 @@ async def upload(
     )
 
     # --- Respond immediately, transcribe in background ---
-    background_tasks.add_task(_process_upload, dest, user_id, file.filename)
+    background_tasks.add_task(_process_upload, dest, user_id, file.filename, timecodes)
     return {"ok": True}
 
+
+app.include_router(transcripts_router)
 
 # Static files mount last (catchall -- must be after API routes)
 app.mount(

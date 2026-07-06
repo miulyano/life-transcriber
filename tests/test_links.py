@@ -83,7 +83,7 @@ async def test_handle_link_asks_timecode_choice(monkeypatch):
     message.reply.assert_awaited_once()
     keyboard = message.reply.await_args.kwargs["reply_markup"]
     callback_datas = [b.callback_data for row in keyboard.inline_keyboard for b in row]
-    assert callback_datas == ["tc:1:pid123", "tc:0:pid123"]
+    assert callback_datas == ["tc:1:pid123", "tc:0:pid123", "tc:x:pid123"]
 
 
 async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):

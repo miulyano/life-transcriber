@@ -17,7 +17,12 @@ async def ask_timecodes(message: Message, job: PendingJob) -> None:
             [
                 InlineKeyboardButton(text="🕒 С таймкодами", callback_data=f"tc:1:{pending_id}"),
                 InlineKeyboardButton(text="Без таймкодов", callback_data=f"tc:0:{pending_id}"),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✖️ Отменить транскрибацию", callback_data=f"tc:x:{pending_id}"
+                ),
+            ],
         ]
     )
     await message.reply("Как прислать результат?", reply_markup=keyboard)

@@ -42,3 +42,6 @@ tmp/
 # Per-user transcription limits + usage data (writable runtime state)
 /data/
 bot/data/user_limits.json
+
+# Claude Code local dev files
+.claude/

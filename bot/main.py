@@ -58,7 +58,7 @@ async def main() -> None:
     if settings.WEBAPP_URL:
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
-                text="📤 Загрузить файл",
+                text="Транскрибации",
                 web_app=WebAppInfo(url=settings.WEBAPP_URL),
             )
         )

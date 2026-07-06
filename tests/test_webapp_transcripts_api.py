@@ -175,6 +175,10 @@ def sent(monkeypatch):
     send_mock = AsyncMock()
     bot = MagicMock()
     bot.session.close = AsyncMock()
+    # ProgressReporter.for_chat status message lifecycle
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.delete_message = AsyncMock()
+    bot.edit_message_text = AsyncMock()
     monkeypatch.setattr(api_module, "Bot", MagicMock(return_value=bot))
     monkeypatch.setattr(api_module, "send_transcript_to_chat", send_mock)
     return send_mock, bot
@@ -223,6 +227,24 @@ async def test_resend_timecoded_without_segments_falls_back_to_plain(client, sto
     )
     assert res.status_code == 200
     assert send_mock.await_args.args[3] is None
+
+
+@pytest.mark.asyncio
+async def test_resend_failure_reports_in_chat(client, store, sent):
+    """Delivery error → status message becomes an in-chat ❌, HTTP is still 200."""
+    send_mock, bot = sent
+    send_mock.side_effect = RuntimeError("telegram down")
+    record = await _seed(store)
+    res = client.post(
+        f"/api/transcripts/{record.id}/resend",
+        headers=_init_headers(111),
+        json={"timecoded": False},
+    )
+    assert res.status_code == 200
+    edited = bot.edit_message_text.await_args.kwargs["text"]
+    assert edited.startswith("❌")
+    bot.delete_message.assert_not_awaited()
+    bot.session.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

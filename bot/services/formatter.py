@@ -8,6 +8,7 @@ raw_text is used (no speaker detection needed).
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from openai import AsyncOpenAI
@@ -111,34 +112,46 @@ def _fmt_ts(ms: int) -> str:
     return f"[{m}:{s:02d}.{frac:03d}]"
 
 
-def render_with_timecodes(
+@dataclass
+class TimecodeSegment:
+    """One timecoded sentence: stamp source for the ``[m:ss.mmm] text`` line.
+
+    ``speaker`` is the resolved display label («Иван» / «Спикер 1»);
+    ``None`` for single-speaker recordings.
+    """
+
+    start_ms: int
+    text: str
+    speaker: Optional[str] = None
+
+
+def build_timecode_segments(
     utterances: list["Utterance"],
     name_map: Optional[dict[str, str]] = None,
-) -> str:
-    """Per-sentence timecoded rendering for the .txt file variant.
+) -> list[TimecodeSegment]:
+    """Split utterances into per-sentence segments with start timestamps.
 
-    Multi-speaker: each speaker turn is a block — label on its own line,
-    ``[m:ss.mmm] text`` lines below, blank line between blocks.  Mono: no
-    label lines, just stamped lines.  Every sentence starts a new stamped
-    line (an utterance boundary counts as a sentence boundary); the stamp is
-    the start of the sentence's first word.  Sentences are never broken
-    mid-way, so unpunctuated stretches keep growing.
+    Every sentence becomes one segment (an utterance boundary counts as a
+    sentence boundary); the stamp is the start of the sentence's first word.
+    Sentences are never broken mid-way, so unpunctuated stretches keep growing.
     """
     if not utterances:
-        return ""
+        return []
     multi = len({u.speaker for u in utterances}) > 1
     _label_for = _speaker_label_resolver(name_map)
 
-    out_lines: list[str] = []
-    cur_line: list[str] = []
-    cur_speaker: Optional[str] = None
+    segments: list[TimecodeSegment] = []
+    cur_words: list[str] = []
+    cur_start = 0
+    cur_label: Optional[str] = None
     prev_word = ""
 
-    def start_line(stamp_ms: int) -> None:
-        nonlocal cur_line
-        if cur_line:
-            out_lines.append(" ".join(cur_line))
-        cur_line = [_fmt_ts(stamp_ms)]
+    def start_segment(stamp_ms: int) -> None:
+        nonlocal cur_words, cur_start
+        if cur_words:
+            segments.append(TimecodeSegment(cur_start, " ".join(cur_words), cur_label))
+        cur_words = []
+        cur_start = stamp_ms
 
     for u in utterances:
         text = u.text.strip()
@@ -148,29 +161,46 @@ def render_with_timecodes(
         if not words:
             words = [(text, u.start_ms)]
 
-        if cur_speaker is None or (multi and u.speaker != cur_speaker):
-            if cur_line:
-                out_lines.append(" ".join(cur_line))
-                cur_line = []
-            if out_lines:
-                out_lines.append("")
-            if multi:
-                out_lines.append(_label_for(u.speaker))
-            cur_speaker = u.speaker
-            start_line(words[0][1])
-        else:
-            # Utterance boundary counts as a sentence boundary.
-            start_line(words[0][1])
+        # Utterance boundary counts as a sentence boundary.
+        start_segment(words[0][1])
+        cur_label = _label_for(u.speaker) if multi else None
 
         for w_text, w_start in words:
-            if len(cur_line) > 1 and _SENT_END_RE.search(prev_word):
-                start_line(w_start)
-            cur_line.append(w_text)
+            if cur_words and _SENT_END_RE.search(prev_word):
+                start_segment(w_start)
+            cur_words.append(w_text)
             prev_word = w_text
 
-    if cur_line:
-        out_lines.append(" ".join(cur_line))
+    if cur_words:
+        segments.append(TimecodeSegment(cur_start, " ".join(cur_words), cur_label))
+    return segments
+
+
+def render_timecode_segments(segments: list[TimecodeSegment]) -> str:
+    """Render segments as ``[m:ss.mmm] text`` lines.
+
+    Multi-speaker: each speaker turn is a block — label on its own line,
+    stamped lines below, blank line between blocks.  Mono (``speaker`` is
+    None): no label lines, just stamped lines.
+    """
+    out_lines: list[str] = []
+    prev_speaker: Optional[str] = None
+    for seg in segments:
+        if seg.speaker is not None and seg.speaker != prev_speaker:
+            if out_lines:
+                out_lines.append("")
+            out_lines.append(seg.speaker)
+        prev_speaker = seg.speaker
+        out_lines.append(f"{_fmt_ts(seg.start_ms)} {seg.text}")
     return "\n".join(out_lines)
+
+
+def render_with_timecodes(
+    utterances: list["Utterance"],
+    name_map: Optional[dict[str, str]] = None,
+) -> str:
+    """Per-sentence timecoded rendering for the .txt file variant."""
+    return render_timecode_segments(build_timecode_segments(utterances, name_map))
 
 
 async def analyze_transcript(

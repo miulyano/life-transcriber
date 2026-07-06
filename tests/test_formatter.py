@@ -193,6 +193,68 @@ def test_timecodes_name_map_and_order_match_render_with_speakers():
     assert out == "Спикер 1\n[0:00.000] Б.\n\nИван\n[0:02.000] А."
 
 
+# ---------- build_timecode_segments / render_timecode_segments ----------
+
+
+def test_build_segments_multi_speaker_labels_resolved():
+    segments = formatter.build_timecode_segments(
+        [_tutt("A", "Привет.", 0), _tutt("B", "Здравствуй.", 3250)],
+        name_map={"A": "Иван"},
+    )
+    assert segments == [
+        formatter.TimecodeSegment(start_ms=0, text="Привет.", speaker="Иван"),
+        formatter.TimecodeSegment(start_ms=3250, text="Здравствуй.", speaker="Спикер 2"),
+    ]
+
+
+def test_build_segments_mono_speaker_none():
+    segments = formatter.build_timecode_segments(
+        [_tutt("A", "Первый.", 0), _tutt("A", "Второй.", 5000)]
+    )
+    assert [s.speaker for s in segments] == [None, None]
+    assert [s.start_ms for s in segments] == [0, 5000]
+
+
+def test_build_segments_split_per_sentence():
+    words = [
+        _tw("Раз", 0),
+        _tw("два.", 1000),
+        _tw("Три.", 2500),
+    ]
+    segments = formatter.build_timecode_segments(
+        [_tutt("A", "Раз два. Три.", 0, words=words)]
+    )
+    assert [(s.start_ms, s.text) for s in segments] == [(0, "Раз два."), (2500, "Три.")]
+
+
+def test_render_segments_equals_render_with_timecodes():
+    utterances = [
+        _tutt(
+            "A",
+            "Раз два три. Четыре пять.",
+            0,
+            words=[
+                _tw("Раз", 0),
+                _tw("два", 1000),
+                _tw("три.", 2000),
+                _tw("Четыре", 3100),
+                _tw("пять.", 4000),
+            ],
+        ),
+        _tutt("B", "Шесть.", 6000),
+        _tutt("A", "Семь.", 8000),
+    ]
+    name_map = {"B": "Мария"}
+    segments = formatter.build_timecode_segments(utterances, name_map)
+    assert formatter.render_timecode_segments(segments) == formatter.render_with_timecodes(
+        utterances, name_map
+    )
+
+
+def test_render_segments_empty():
+    assert formatter.render_timecode_segments([]) == ""
+
+
 # ---------- analyze_transcript ----------
 
 

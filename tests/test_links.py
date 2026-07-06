@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -57,7 +57,36 @@ def test_friendly_error_accepts_typed_provider_error():
     assert text == "Не удалось скачать видео"
 
 
-async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
+async def test_handle_link_asks_timecode_choice(monkeypatch):
+    registered = []
+
+    def fake_put_job(job):
+        registered.append(job)
+        return "pid123"
+
+    from bot.handlers import _timecode_prompt
+
+    monkeypatch.setattr(_timecode_prompt, "put_job", fake_put_job)
+
+    message = MagicMock()
+    message.text = "https://example.com/video"
+    message.from_user.id = 777
+    message.reply = AsyncMock()
+
+    await links.handle_link(message)
+
+    assert len(registered) == 1
+    job = registered[0]
+    assert job.kind == "link"
+    assert job.url == "https://example.com/video"
+    assert job.user_id == 777
+    message.reply.assert_awaited_once()
+    keyboard = message.reply.await_args.kwargs["reply_markup"]
+    callback_datas = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert callback_datas == ["tc:1:pid123", "tc:0:pid123"]
+
+
+async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):
     events = []
     audio_path = tmp_path / "audio.mp3"
 
@@ -93,7 +122,7 @@ async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeyp
         from bot.services.source_meta import SourceMetadata as _SM
         return str(audio_path), _SM()
 
-    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, source_meta=None, on_phase_change=None):
+    async def fake_pipeline(audio_path, *, reporter, deliver_text, user_id, source_meta=None, on_phase_change=None, source_type="unknown", transcript_store=None):
         events.append(("pipeline", audio_path, user_id, source_meta))
         await reporter.set_phase("Форматирую…")
         await reporter.set_phase("Отправляю результат…")
@@ -111,7 +140,7 @@ async def test_handle_link_keeps_progress_until_result_is_sent(tmp_path, monkeyp
     message.text = "https://example.com/video"
     message.from_user.id = 777
 
-    await links.handle_link(message)
+    await links.process_link(message, "https://example.com/video")
 
     assert events.index(("phase", "Отправляю результат…")) < events.index(("reply", "transcript"))
     assert events.index(("reply", "transcript")) < events.index("finish")

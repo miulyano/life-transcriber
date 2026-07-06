@@ -36,6 +36,8 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
         user_id,
         source_meta=None,
         on_phase_change=None,
+        source_type="unknown",
+        transcript_store=None,
     ) -> None:
         calls.append(("pipeline", audio_path, user_id, source_meta))
         await deliver_text("готовый текст")

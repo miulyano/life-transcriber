@@ -3,10 +3,18 @@ tg.ready();
 tg.expand();
 
 const fileInput = document.getElementById('file');
+const timecodesInput = document.getElementById('timecodes');
 const btn = document.getElementById('upload');
 const status = document.getElementById('status');
 const progress = document.getElementById('progress');
 const progressBar = document.getElementById('progress-bar');
+
+const tabUpload = document.getElementById('tab-upload');
+const tabList = document.getElementById('tab-list');
+const tabBtnUpload = document.getElementById('tab-btn-upload');
+const tabBtnList = document.getElementById('tab-btn-list');
+const listStatus = document.getElementById('list-status');
+const transcriptsUl = document.getElementById('transcripts');
 
 function setStatus(msg, cls) {
   status.textContent = msg;
@@ -23,6 +31,179 @@ function hideProgress() {
   progressBar.style.width = '0%';
 }
 
+// --- Tabs ---
+
+function activateTab(name) {
+  const isUpload = name === 'upload';
+  tabUpload.hidden = !isUpload;
+  tabList.hidden = isUpload;
+  tabBtnUpload.classList.toggle('active', isUpload);
+  tabBtnList.classList.toggle('active', !isUpload);
+  if (!isUpload) loadTranscripts();
+}
+
+tabBtnUpload.onclick = () => activateTab('upload');
+tabBtnList.onclick = () => activateTab('list');
+
+// --- API helper: initData goes in a header, never in the URL ---
+
+function api(path, opts = {}) {
+  return fetch(path, {
+    ...opts,
+    headers: {
+      'X-Telegram-Init-Data': tg.initData,
+      ...(opts.headers || {}),
+    },
+  });
+}
+
+// --- Transcripts list ---
+
+function fmtDuration(sec) {
+  const total = Math.round(sec);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function confirmDialog(message) {
+  return new Promise((resolve) => {
+    if (tg.showConfirm) {
+      tg.showConfirm(message, resolve);
+    } else {
+      resolve(window.confirm(message));
+    }
+  });
+}
+
+async function loadTranscripts() {
+  listStatus.textContent = 'Загружаю…';
+  transcriptsUl.innerHTML = '';
+  try {
+    const res = await api('/api/transcripts');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.items.length) {
+      listStatus.textContent = 'Пока пусто. Отправь боту голосовое, видео или ссылку — запись появится здесь.';
+      return;
+    }
+    listStatus.textContent = '';
+    data.items.forEach((item) => transcriptsUl.appendChild(renderCard(item)));
+  } catch (e) {
+    listStatus.textContent = `❌ Не удалось загрузить список: ${e.message || e}`;
+  }
+}
+
+function renderCard(item) {
+  const li = document.createElement('li');
+  li.className = 'card';
+
+  const title = document.createElement('div');
+  title.className = 'title';
+  title.textContent = item.title || 'Без названия';
+  li.appendChild(title);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const parts = [fmtDate(item.created_at)];
+  if (item.duration_sec > 0) parts.push(fmtDuration(item.duration_sec));
+  meta.textContent = parts.filter(Boolean).join(' · ');
+  li.appendChild(meta);
+
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+
+  const dlBtn = document.createElement('button');
+  dlBtn.textContent = '⬇';
+  dlBtn.title = 'Скачать';
+  dlBtn.onclick = () => downloadTranscript(item, dlBtn);
+  actions.appendChild(dlBtn);
+
+  const resendBtn = document.createElement('button');
+  resendBtn.textContent = '↩ В чат';
+  resendBtn.onclick = () => resendTranscript(item.id, false, resendBtn);
+  actions.appendChild(resendBtn);
+
+  const resendTcBtn = document.createElement('button');
+  resendTcBtn.textContent = '↩ 🕒';
+  resendTcBtn.title = 'В чат с таймкодами';
+  resendTcBtn.onclick = () => resendTranscript(item.id, true, resendTcBtn);
+  actions.appendChild(resendTcBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'danger';
+  delBtn.textContent = '🗑';
+  delBtn.title = 'Удалить';
+  delBtn.onclick = async () => {
+    const ok = await confirmDialog('Удалить запись? Файл будет удалён безвозвратно.');
+    if (!ok) return;
+    delBtn.disabled = true;
+    try {
+      const res = await api(`/api/transcripts/${item.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      li.remove();
+      if (!transcriptsUl.children.length) {
+        listStatus.textContent = 'Пока пусто. Отправь боту голосовое, видео или ссылку — запись появится здесь.';
+      }
+    } catch (e) {
+      delBtn.disabled = false;
+      listStatus.textContent = `❌ Не удалось удалить: ${e.message || e}`;
+    }
+  };
+  actions.appendChild(delBtn);
+
+  li.appendChild(actions);
+  return li;
+}
+
+async function downloadTranscript(item, button) {
+  button.disabled = true;
+  try {
+    const res = await api(`/api/transcripts/${item.id}/file`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^";]+)"?/);
+    a.download = m ? m[1] : 'transcript.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    listStatus.textContent = `❌ Не удалось скачать: ${e.message || e}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function resendTranscript(id, timecoded, button) {
+  button.disabled = true;
+  try {
+    const res = await api(`/api/transcripts/${id}/resend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timecoded }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    listStatus.textContent = '✅ Отправлено в чат.';
+  } catch (e) {
+    listStatus.textContent = `❌ Не удалось отправить: ${e.message || e}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// --- Upload ---
+
 btn.onclick = () => {
   const f = fileInput.files[0];
   if (!f) {
@@ -38,6 +219,7 @@ btn.onclick = () => {
   const fd = new FormData();
   fd.append('file', f);
   fd.append('init_data', tg.initData);
+  fd.append('timecodes', timecodesInput.checked ? 'true' : 'false');
 
   const xhr = new XMLHttpRequest();
 

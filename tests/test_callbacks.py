@@ -8,7 +8,10 @@ from bot.handlers.callbacks import (
     _extract_text_from_message,
     handle_cleanup,
     handle_summary,
+    handle_timecode_choice,
 )
+from bot.services import pending_jobs
+from bot.services.pending_jobs import PendingJob
 from bot.utils import text as text_mod
 
 
@@ -412,3 +415,115 @@ async def test_summary_strips_header_before_sending_to_gpt():
     mock_sum.assert_awaited_once_with(
         "Длинный исходный текст для конспекта.", on_progress=ANY
     )
+
+
+# ---------- tc: (выбор таймкодов перед генерацией) ----------
+
+
+@pytest.fixture(autouse=True)
+def clear_pending():
+    pending_jobs._pending.clear()
+    yield
+    pending_jobs._pending.clear()
+
+
+def _pending_link_job(user_id=777):
+    return PendingJob(
+        user_id=user_id,
+        kind="link",
+        message=MagicMock(),
+        source_type="link",
+        url="https://example.com/v",
+    )
+
+
+def _tc_callback(data, user_id=777):
+    cb = _make_callback(text="Как прислать результат?")
+    cb.data = data
+    cb.from_user = MagicMock()
+    cb.from_user.id = user_id
+    cb.message.delete = AsyncMock()
+    return cb
+
+
+async def test_tc_link_runs_pipeline_with_timecodes():
+    job = _pending_link_job()
+    pending_id = pending_jobs.put_job(job)
+    cb = _tc_callback(f"tc:1:{pending_id}")
+
+    with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    mock_process.assert_awaited_once_with(job.message, "https://example.com/v", timecodes=True)
+    cb.answer.assert_awaited_once_with()
+    cb.message.delete.assert_awaited_once()
+
+
+async def test_tc_link_runs_pipeline_without_timecodes():
+    job = _pending_link_job()
+    pending_id = pending_jobs.put_job(job)
+    cb = _tc_callback(f"tc:0:{pending_id}")
+
+    with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    assert mock_process.await_args.kwargs["timecodes"] is False
+
+
+async def test_tc_media_forwards_job_fields():
+    job = PendingJob(
+        user_id=777,
+        kind="tg_media",
+        message=MagicMock(),
+        source_type="video",
+        file_id="fid",
+        suffix=".mp4",
+        label="Скачиваю видео из Telegram…",
+        extract_audio_first=True,
+        filename_hint="movie.mp4",
+    )
+    pending_id = pending_jobs.put_job(job)
+    cb = _tc_callback(f"tc:1:{pending_id}")
+
+    with patch("bot.handlers._tg_media.process_tg_media", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    mock_process.assert_awaited_once_with(
+        job.message,
+        cb.bot,
+        "fid",
+        ".mp4",
+        label="Скачиваю видео из Telegram…",
+        extract_audio_first=True,
+        filename_hint="movie.mp4",
+        source_type="video",
+        timecodes=True,
+    )
+
+
+async def test_tc_expired_pending_shows_alert():
+    cb = _tc_callback("tc:1:deadbeef")
+
+    with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    mock_process.assert_not_awaited()
+    cb.answer.assert_awaited_once_with("Запрос устарел, отправь заново.", show_alert=True)
+
+
+async def test_tc_foreign_user_cannot_start_job():
+    job = _pending_link_job(user_id=777)
+    pending_id = pending_jobs.put_job(job)
+    cb = _tc_callback(f"tc:1:{pending_id}", user_id=999)
+
+    with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    mock_process.assert_not_awaited()
+    cb.answer.assert_awaited_once_with("Запрос устарел, отправь заново.", show_alert=True)
+
+
+async def test_tc_malformed_data():
+    cb = _tc_callback("tc:oops")
+    await handle_timecode_choice(cb)
+    cb.answer.assert_awaited_once_with("Некорректный запрос.", show_alert=True)

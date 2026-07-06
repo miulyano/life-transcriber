@@ -32,6 +32,26 @@ class _NoLimitStore:
         self.commits.append((user_id, seconds))
 
 
+class _SpyTranscriptStore:
+    def __init__(self, fail: bool = False):
+        self.saved: list[dict] = []
+        self._fail = fail
+
+    async def save(self, user_id, *, title, source_type, duration_sec, body, segments):
+        if self._fail:
+            raise RuntimeError("disk full")
+        self.saved.append(
+            {
+                "user_id": user_id,
+                "title": title,
+                "source_type": source_type,
+                "duration_sec": duration_sec,
+                "body": body,
+                "segments": segments,
+            }
+        )
+
+
 def _result(body="formatted body", title="T", raw="raw", duration=42.0):
     return FormattedTranscript(
         title=title,
@@ -100,3 +120,86 @@ async def test_pipeline_passes_none_source_meta(monkeypatch):
 
     assert transcribe_mock.await_args.kwargs["source_meta"] is None
     assert "on_phase" in transcribe_mock.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_pipeline_persists_before_delivery(monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        pipeline_module, "transcribe", AsyncMock(return_value=_result(body="B", title="T"))
+    )
+
+    transcript_store = _SpyTranscriptStore()
+    orig_save = transcript_store.save
+
+    async def tracking_save(*args, **kwargs):
+        order.append("save")
+        return await orig_save(*args, **kwargs)
+
+    transcript_store.save = tracking_save
+
+    async def deliver(text, file_text=None):
+        order.append("deliver")
+
+    await pipeline_module.run_transcription_pipeline(
+        "/tmp/audio.mp3",
+        reporter=_Reporter(),
+        deliver_text=deliver,
+        user_id=111,
+        usage_store=_NoLimitStore(),
+        source_type="voice",
+        transcript_store=transcript_store,
+    )
+
+    assert order == ["save", "deliver"]
+    assert transcript_store.saved == [
+        {
+            "user_id": 111,
+            "title": "T",
+            "source_type": "voice",
+            "duration_sec": 42.0,
+            "body": "B",
+            "segments": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_store_failure_does_not_block_delivery(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "transcribe", AsyncMock(return_value=_result()))
+    deliver = AsyncMock()
+
+    await pipeline_module.run_transcription_pipeline(
+        "/tmp/audio.mp3",
+        reporter=_Reporter(),
+        deliver_text=deliver,
+        user_id=111,
+        usage_store=_NoLimitStore(),
+        transcript_store=_SpyTranscriptStore(fail=True),
+    )
+
+    deliver.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_limit_exceeded_no_save(monkeypatch):
+    from bot.services.usage_store import LimitExceededError
+
+    class _BlockedStore(_NoLimitStore):
+        async def assert_within_limit(self, user_id: int) -> None:
+            raise LimitExceededError(5)
+
+    monkeypatch.setattr(pipeline_module, "transcribe", AsyncMock(return_value=_result()))
+    transcript_store = _SpyTranscriptStore()
+
+    with pytest.raises(LimitExceededError):
+        await pipeline_module.run_transcription_pipeline(
+            "/tmp/audio.mp3",
+            reporter=_Reporter(),
+            deliver_text=AsyncMock(),
+            user_id=111,
+            usage_store=_BlockedStore(),
+            transcript_store=transcript_store,
+        )
+
+    assert transcript_store.saved == []

@@ -1,11 +1,14 @@
 import html
+from contextlib import suppress
 from typing import Optional
 
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import BufferedInputFile
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
 from bot.constants import TELEGRAM_TEXT_LIMIT
+from bot.services.pending_jobs import pop_job
 from bot.services.summarizer import cleanup_transcript, summarize
 from bot.utils.filename import build_filename, extract_title, split_header_and_body
 from bot.utils.markdown import markdown_to_telegram_html
@@ -13,6 +16,48 @@ from bot.utils.progress import ProgressReporter
 from bot.utils.text import _store_text, get_cached_text, strip_timecodes
 
 router = Router()
+
+
+@router.callback_query(F.data.startswith("tc:"))
+async def handle_timecode_choice(callback: CallbackQuery) -> None:
+    """Start a pending transcription with the chosen delivery format."""
+    # Local imports to avoid a handlers-package import cycle.
+    from bot.handlers._tg_media import process_tg_media
+    from bot.handlers.links import process_link
+
+    try:
+        _, flag, pending_id = callback.data.split(":", 2)
+    except ValueError:
+        await callback.answer("Некорректный запрос.", show_alert=True)
+        return
+    timecodes = flag == "1"
+
+    user_id = callback.from_user.id if callback.from_user else 0
+    job = pop_job(pending_id, user_id)
+    if job is None:
+        await callback.answer("Запрос устарел, отправь заново.", show_alert=True)
+        return
+
+    await callback.answer()
+    # Drop the question message — progress replies to the original one.
+    if isinstance(callback.message, Message):
+        with suppress(TelegramBadRequest, TelegramForbiddenError):
+            await callback.message.delete()
+
+    if job.kind == "link":
+        await process_link(job.message, job.url, timecodes=timecodes)
+    else:
+        await process_tg_media(
+            job.message,
+            callback.bot,
+            job.file_id,
+            job.suffix,
+            label=job.label,
+            extract_audio_first=job.extract_audio_first,
+            filename_hint=job.filename_hint,
+            source_type=job.source_type,
+            timecodes=timecodes,
+        )
 
 
 async def _extract_text_from_message(callback: CallbackQuery) -> Optional[str]:

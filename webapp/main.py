@@ -50,6 +50,20 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    """Force revalidation of static files.
+
+    Telegram WebView caches subresources aggressively when no Cache-Control is
+    set: after a deploy it may serve fresh index.html with a stale app.js
+    (dead UI handlers). The files are tiny — always revalidate.
+    """
+    response = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def _file_size(path: str) -> int | None:
     try:
         return os.path.getsize(path)

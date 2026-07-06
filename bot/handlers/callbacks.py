@@ -30,10 +30,20 @@ async def handle_timecode_choice(callback: CallbackQuery) -> None:
     except ValueError:
         await callback.answer("Некорректный запрос.", show_alert=True)
         return
-    timecodes = flag == "1"
 
     user_id = callback.from_user.id if callback.from_user else 0
     job = pop_job(pending_id, user_id)
+
+    if flag == "x":
+        # Cancel: drop the job (already popped) and the question message.
+        # An expired/missing job still deletes the message — nothing to run anyway.
+        await callback.answer("Отменено.")
+        if isinstance(callback.message, Message):
+            with suppress(TelegramBadRequest, TelegramForbiddenError):
+                await callback.message.delete()
+        return
+
+    timecodes = flag == "1"
     if job is None:
         await callback.answer("Запрос устарел, отправь заново.", show_alert=True)
         return

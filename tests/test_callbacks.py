@@ -527,3 +527,29 @@ async def test_tc_malformed_data():
     cb = _tc_callback("tc:oops")
     await handle_timecode_choice(cb)
     cb.answer.assert_awaited_once_with("Некорректный запрос.", show_alert=True)
+
+
+async def test_tc_cancel_removes_job_and_message():
+    job = _pending_link_job()
+    pending_id = pending_jobs.put_job(job)
+    cb = _tc_callback(f"tc:x:{pending_id}")
+
+    with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    mock_process.assert_not_awaited()
+    cb.answer.assert_awaited_once_with("Отменено.")
+    cb.message.delete.assert_awaited_once()
+    # job изъят из реестра — повторный клик по «С таймкодами» уже не запустит пайплайн
+    assert pending_jobs.pop_job(pending_id, 777) is None
+
+
+async def test_tc_cancel_expired_still_deletes_message():
+    cb = _tc_callback("tc:x:deadbeef")
+
+    with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
+        await handle_timecode_choice(cb)
+
+    mock_process.assert_not_awaited()
+    cb.answer.assert_awaited_once_with("Отменено.")
+    cb.message.delete.assert_awaited_once()

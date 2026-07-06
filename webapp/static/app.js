@@ -109,6 +109,13 @@ function renderCard(item) {
   title.textContent = item.title || 'Без названия';
   li.appendChild(title);
 
+  if (item.channel) {
+    const channel = document.createElement('div');
+    channel.className = 'channel';
+    channel.textContent = `📺 ${item.channel}`;
+    li.appendChild(channel);
+  }
+
   const meta = document.createElement('div');
   meta.className = 'meta';
   const parts = [fmtDate(item.created_at)];
@@ -119,20 +126,13 @@ function renderCard(item) {
   const actions = document.createElement('div');
   actions.className = 'actions';
 
-  const dlBtn = document.createElement('button');
-  dlBtn.textContent = '⬇';
-  dlBtn.title = 'Скачать';
-  dlBtn.onclick = () => downloadTranscript(item, dlBtn);
-  actions.appendChild(dlBtn);
-
   const resendBtn = document.createElement('button');
-  resendBtn.textContent = '↩ В чат';
+  resendBtn.textContent = '📨 Прислать в чат';
   resendBtn.onclick = () => resendTranscript(item.id, false, resendBtn);
   actions.appendChild(resendBtn);
 
   const resendTcBtn = document.createElement('button');
-  resendTcBtn.textContent = '↩ 🕒';
-  resendTcBtn.title = 'В чат с таймкодами';
+  resendTcBtn.textContent = '🕒 С таймкодами';
   resendTcBtn.onclick = () => resendTranscript(item.id, true, resendTcBtn);
   actions.appendChild(resendTcBtn);
 
@@ -162,29 +162,6 @@ function renderCard(item) {
   return li;
 }
 
-async function downloadTranscript(item, button) {
-  button.disabled = true;
-  try {
-    const res = await api(`/api/transcripts/${item.id}/file`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const cd = res.headers.get('Content-Disposition') || '';
-    const m = cd.match(/filename="?([^";]+)"?/);
-    a.download = m ? m[1] : 'transcript.txt';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    listStatus.textContent = `❌ Не удалось скачать: ${e.message || e}`;
-  } finally {
-    button.disabled = false;
-  }
-}
-
 async function resendTranscript(id, timecoded, button) {
   button.disabled = true;
   try {
@@ -194,10 +171,11 @@ async function resendTranscript(id, timecoded, button) {
       body: JSON.stringify({ timecoded }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    listStatus.textContent = '✅ Отправлено в чат.';
+    // Delivery continues in the background; progress shows up in the chat.
+    listStatus.textContent = '📨 Отправляю в чат…';
+    setTimeout(() => tg.close(), 800);
   } catch (e) {
     listStatus.textContent = `❌ Не удалось отправить: ${e.message || e}`;
-  } finally {
     button.disabled = false;
   }
 }

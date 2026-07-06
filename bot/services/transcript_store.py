@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS transcripts (
     duration_sec  REAL NOT NULL DEFAULT 0,
     char_count    INTEGER NOT NULL DEFAULT 0,
     txt_path      TEXT NOT NULL,
-    segments_path TEXT
+    segments_path TEXT,
+    channel       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transcripts_user_created
     ON transcripts(user_id, created_at DESC);
@@ -44,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_transcripts_user_created
 
 _COLUMNS = (
     "id, user_id, title, created_at, source_type, duration_sec, "
-    "char_count, txt_path, segments_path"
+    "char_count, txt_path, segments_path, channel"
 )
 
 
@@ -59,6 +60,7 @@ class TranscriptRecord:
     char_count: int
     txt_path: str
     segments_path: Optional[str]
+    channel: Optional[str] = None  # источник/автор («📺 Канал» из шапки)
 
 
 def _atomic_write(path: str, content: str) -> None:
@@ -85,6 +87,10 @@ class TranscriptStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(_SCHEMA)
+        # Migration: existing DBs created before the channel column.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(transcripts)")}
+        if "channel" not in cols:
+            conn.execute("ALTER TABLE transcripts ADD COLUMN channel TEXT")
         return conn
 
     async def save(
@@ -96,9 +102,17 @@ class TranscriptStore:
         duration_sec: float,
         body: str,
         segments: list[TimecodeSegment],
+        channel: Optional[str] = None,
     ) -> TranscriptRecord:
         return await asyncio.to_thread(
-            self._save_sync, user_id, title, source_type, duration_sec, body, segments
+            self._save_sync,
+            user_id,
+            title,
+            source_type,
+            duration_sec,
+            body,
+            segments,
+            channel,
         )
 
     def _save_sync(
@@ -109,6 +123,7 @@ class TranscriptStore:
         duration_sec: float,
         body: str,
         segments: list[TimecodeSegment],
+        channel: Optional[str] = None,
     ) -> TranscriptRecord:
         record_id = uuid.uuid4().hex
         os.makedirs(self._files_dir, exist_ok=True)
@@ -137,11 +152,12 @@ class TranscriptStore:
             char_count=len(body),
             txt_path=txt_path,
             segments_path=segments_path,
+            channel=channel or None,
         )
         try:
             with self._connect() as conn:
                 conn.execute(
-                    f"INSERT INTO transcripts ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?)",
+                    f"INSERT INTO transcripts ({_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         record.id,
                         record.user_id,
@@ -152,6 +168,7 @@ class TranscriptStore:
                         record.char_count,
                         record.txt_path,
                         record.segments_path,
+                        record.channel,
                     ),
                 )
         except Exception:

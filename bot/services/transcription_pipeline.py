@@ -68,6 +68,7 @@ async def run_transcription_pipeline(
             duration_sec=result.audio_duration_sec,
             body=result.body,
             segments=result.timecode_segments,
+            channel=result.uploader,
         )
     except Exception:
         logger.exception("Failed to persist transcript for user %s", user_id)

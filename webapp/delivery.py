@@ -17,7 +17,7 @@ async def send_transcript_to_chat(
     """
     d = prepare_transcript(text)
     if not d.send_as_file:
-        await bot.send_message(chat_id, text, reply_markup=d.keyboard)
+        await bot.send_message(chat_id, d.body_html, reply_markup=d.keyboard)
     else:
         await bot.send_document(
             chat_id,

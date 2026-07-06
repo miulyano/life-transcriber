@@ -12,8 +12,7 @@ from typing import Optional
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -21,6 +20,7 @@ from bot.config import settings
 from bot.services.formatter import render_timecode_segments
 from bot.services.transcript_store import get_transcript_store
 from bot.utils.filename import build_filename, split_header_and_body
+from bot.utils.progress import ProgressReporter
 from webapp.delivery import send_transcript_to_chat
 from webapp.deps import resolve_user_id
 
@@ -41,6 +41,7 @@ async def list_transcripts(user_id: int = Depends(resolve_user_id)) -> dict:
             {
                 "id": r.id,
                 "title": r.title,
+                "channel": r.channel,
                 "created_at": r.created_at,
                 "source_type": r.source_type,
                 "duration_sec": r.duration_sec,
@@ -75,9 +76,36 @@ async def delete_transcript(
     return {"ok": True}
 
 
+async def _deliver_resend(user_id: int, text: str, file_text: str | None) -> None:
+    """Send a stored transcript to chat. Runs as a background task.
+
+    Same status model as _process_upload: a ProgressReporter status message
+    in chat shows the phase; on failure it turns into an in-chat error.
+    """
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    try:
+        async with ProgressReporter.for_chat(
+            bot, user_id, "Отправляю результат…"
+        ) as reporter:
+            try:
+                await send_transcript_to_chat(bot, user_id, text, file_text)
+                await reporter.finish()
+            except Exception:
+                logger.exception("Resend to chat failed for user %s", user_id)
+                await reporter.fail(
+                    "Не удалось отправить транскрибацию. Попробуй ещё раз."
+                )
+    finally:
+        await bot.session.close()
+
+
 @router.post("/{record_id}/resend")
 async def resend_transcript(
     record_id: str,
+    background_tasks: BackgroundTasks,
     body: Optional[ResendRequest] = None,
     user_id: int = Depends(resolve_user_id),
 ) -> dict:
@@ -95,15 +123,7 @@ async def resend_transcript(
             header, _ = split_header_and_body(text)
             file_text = f"{header}\n\n{rendered}".strip() if header else rendered
 
-    bot = Bot(
-        token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    try:
-        await send_transcript_to_chat(bot, user_id, text, file_text)
-    except TelegramAPIError as e:
-        logger.warning("Resend to chat failed for user %s: %s", user_id, e)
-        raise HTTPException(502, "Failed to send to Telegram")
-    finally:
-        await bot.session.close()
+    # Respond immediately; delivery happens in the background with an
+    # in-chat status message (same model as the upload flow).
+    background_tasks.add_task(_deliver_resend, user_id, text, file_text)
     return {"ok": True}

@@ -47,6 +47,66 @@ async def test_save_writes_files_and_row(store):
     assert loaded.char_count == len("Тест\n\nПривет.")
     assert loaded.duration_sec == 42.5
     assert loaded.source_type == "voice"
+    assert loaded.channel is None
+
+
+@pytest.mark.asyncio
+async def test_save_channel_roundtrip(store):
+    record = await store.save(
+        111,
+        title="Тест",
+        source_type="link",
+        duration_sec=10.0,
+        body="Тест\n\nПривет.",
+        segments=[],
+        channel="Канал Васи",
+    )
+    loaded = await store.get(record.id, 111)
+    assert loaded.channel == "Канал Васи"
+
+
+@pytest.mark.asyncio
+async def test_channel_column_migration(tmp_path):
+    """Old DB without the channel column gets migrated on connect."""
+    import sqlite3
+
+    db_path = str(tmp_path / "transcripts.db")
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE transcripts (
+            id            TEXT PRIMARY KEY,
+            user_id       INTEGER NOT NULL,
+            title         TEXT NOT NULL DEFAULT '',
+            created_at    TEXT NOT NULL,
+            source_type   TEXT NOT NULL DEFAULT 'unknown',
+            duration_sec  REAL NOT NULL DEFAULT 0,
+            char_count    INTEGER NOT NULL DEFAULT 0,
+            txt_path      TEXT NOT NULL,
+            segments_path TEXT
+        );
+        INSERT INTO transcripts VALUES
+            ('old1', 111, 'Старая', '2026-01-01T00:00:00+00:00', 'voice',
+             5.0, 3, '/tmp/none.txt', NULL);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = TranscriptStore(db_path=db_path, files_dir=str(tmp_path / "transcripts"))
+    old = await store.get("old1", 111)
+    assert old.channel is None
+
+    record = await store.save(
+        111,
+        title="Новая",
+        source_type="link",
+        duration_sec=1.0,
+        body="Новая\n\nТекст.",
+        segments=[],
+        channel="Канал",
+    )
+    assert (await store.get(record.id, 111)).channel == "Канал"
 
 
 @pytest.mark.asyncio

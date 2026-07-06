@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from bot.utils.text import prepare_transcript
 from webapp.delivery import send_transcript_to_chat
 
 
@@ -22,7 +23,8 @@ async def test_short_text_sends_message(mock_bot):
     mock_bot.send_message.assert_called_once()
     call_args = mock_bot.send_message.call_args
     assert call_args.args[0] == 111
-    assert call_args.args[1] == text
+    # HTML-rendered body, same as the bot's reply_text_or_file()
+    assert call_args.args[1] == prepare_transcript(text).body_html
     mock_bot.send_document.assert_not_called()
 
 

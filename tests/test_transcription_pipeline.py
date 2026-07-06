@@ -37,7 +37,9 @@ class _SpyTranscriptStore:
         self.saved: list[dict] = []
         self._fail = fail
 
-    async def save(self, user_id, *, title, source_type, duration_sec, body, segments):
+    async def save(
+        self, user_id, *, title, source_type, duration_sec, body, segments, channel=None
+    ):
         if self._fail:
             raise RuntimeError("disk full")
         self.saved.append(
@@ -48,6 +50,7 @@ class _SpyTranscriptStore:
                 "duration_sec": duration_sec,
                 "body": body,
                 "segments": segments,
+                "channel": channel,
             }
         )
 
@@ -160,6 +163,7 @@ async def test_pipeline_persists_before_delivery(monkeypatch):
             "duration_sec": 42.0,
             "body": "B",
             "segments": [],
+            "channel": None,
         }
     ]
 

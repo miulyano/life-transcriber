@@ -124,7 +124,7 @@ async def test_list_only_own_rows(client, store):
     items = res.json()["items"]
     assert [i["title"] for i in items] == ["mine"]
     assert set(items[0]) == {
-        "id", "title", "created_at", "source_type", "duration_sec", "char_count"
+        "id", "title", "channel", "created_at", "source_type", "duration_sec", "char_count"
     }
 
 

@@ -41,6 +41,7 @@ async def list_transcripts(user_id: int = Depends(resolve_user_id)) -> dict:
             {
                 "id": r.id,
                 "title": r.title,
+                "channel": r.channel,
                 "created_at": r.created_at,
                 "source_type": r.source_type,
                 "duration_sec": r.duration_sec,

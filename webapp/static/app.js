@@ -109,6 +109,13 @@ function renderCard(item) {
   title.textContent = item.title || 'Без названия';
   li.appendChild(title);
 
+  if (item.channel) {
+    const channel = document.createElement('div');
+    channel.className = 'channel';
+    channel.textContent = `📺 ${item.channel}`;
+    li.appendChild(channel);
+  }
+
   const meta = document.createElement('div');
   meta.className = 'meta';
   const parts = [fmtDate(item.created_at)];

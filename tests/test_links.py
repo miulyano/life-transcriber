@@ -91,7 +91,7 @@ async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkey
     audio_path = tmp_path / "audio.mp3"
 
     class Reporter:
-        def __init__(self, _message, label):
+        def __init__(self, _message, label, **_kwargs):
             events.append(("init", label))
 
         async def __aenter__(self):
@@ -144,3 +144,96 @@ async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkey
 
     assert events.index(("phase", "Отправляю результат…")) < events.index(("reply", "transcript"))
     assert events.index(("reply", "transcript")) < events.index("finish")
+
+
+async def test_process_link_queued_label_when_semaphore_busy(monkeypatch):
+    """Пока все слоты семафора заняты, статус-сообщение — «В очереди…»."""
+    import asyncio
+
+    from bot.services import task_registry
+
+    monkeypatch.setattr(task_registry.settings, "MAX_CONCURRENT_TRANSCRIPTIONS", 1)
+    sem = task_registry.get_semaphore()
+    await sem.acquire()  # слот занят «первой» задачей
+
+    labels = []
+
+    class Reporter:
+        def __init__(self, _message, label, **_kwargs):
+            labels.append(label)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def set_phase(self, label):
+            labels.append(label)
+
+        async def finish(self):
+            pass
+
+    async def fake_download_audio(url, _output_dir):
+        from bot.services.source_meta import SourceMetadata as _SM
+
+        return "/nonexistent/audio.mp3", _SM()
+
+    async def fake_pipeline(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(links, "ProgressReporter", Reporter)
+    monkeypatch.setattr(links, "download_audio", fake_download_audio)
+    monkeypatch.setattr(links, "run_transcription_pipeline", fake_pipeline)
+
+    message = MagicMock()
+    message.from_user.id = 777
+
+    task = asyncio.create_task(links.process_link(message, "https://example.com/v"))
+    await asyncio.sleep(0)  # репортер создан, задача ждёт слот
+    assert labels == ["В очереди…"]
+
+    sem.release()
+    await task
+    assert labels[1] == "Скачиваю аудио по ссылке…"
+
+
+async def test_process_link_cancelled_cleans_temp_and_propagates(tmp_path, monkeypatch):
+    """Отмена во время транскрибации: temp-файл удалён, CancelledError наружу."""
+    import asyncio
+
+    audio_path = tmp_path / "audio.mp3"
+
+    class Reporter:
+        def __init__(self, _message, label, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None  # CancelledError пропагирует, как в настоящем репортере
+
+        async def set_phase(self, label):
+            pass
+
+    async def fake_download_audio(url, _output_dir):
+        from bot.services.source_meta import SourceMetadata as _SM
+
+        audio_path.write_bytes(b"audio")
+        return str(audio_path), _SM()
+
+    async def fake_pipeline(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(links, "ProgressReporter", Reporter)
+    monkeypatch.setattr(links, "download_audio", fake_download_audio)
+    monkeypatch.setattr(links, "run_transcription_pipeline", fake_pipeline)
+
+    message = MagicMock()
+    message.from_user.id = 777
+
+    with pytest.raises(asyncio.CancelledError):
+        await links.process_link(message, "https://example.com/v")
+
+    assert not audio_path.exists()

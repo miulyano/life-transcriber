@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.constants import TELEGRAM_TEXT_LIMIT
 from bot.services.pending_jobs import pop_job
 from bot.services.summarizer import cleanup_transcript, summarize
+from bot.services.task_registry import cancel_task, spawn_transcription
 from bot.utils.filename import build_filename, extract_title, split_header_and_body
 from bot.utils.markdown import markdown_to_telegram_html
 from bot.utils.progress import ProgressReporter
@@ -54,20 +55,42 @@ async def handle_timecode_choice(callback: CallbackQuery) -> None:
         with suppress(TelegramBadRequest, TelegramForbiddenError):
             await callback.message.delete()
 
+    # Spawn instead of await: the handler returns immediately, so several
+    # transcriptions can run side by side and each one is cancellable.
     if job.kind == "link":
-        await process_link(job.message, job.url, timecodes=timecodes)
-    else:
-        await process_tg_media(
-            job.message,
-            callback.bot,
-            job.file_id,
-            job.suffix,
-            label=job.label,
-            extract_audio_first=job.extract_audio_first,
-            filename_hint=job.filename_hint,
-            source_type=job.source_type,
-            timecodes=timecodes,
+        spawn_transcription(
+            user_id,
+            lambda tid: process_link(
+                job.message, job.url, timecodes=timecodes, cancel_token=tid
+            ),
         )
+    else:
+        spawn_transcription(
+            user_id,
+            lambda tid: process_tg_media(
+                job.message,
+                callback.bot,
+                job.file_id,
+                job.suffix,
+                label=job.label,
+                extract_audio_first=job.extract_audio_first,
+                filename_hint=job.filename_hint,
+                source_type=job.source_type,
+                timecodes=timecodes,
+                cancel_token=tid,
+            ),
+        )
+
+
+@router.callback_query(F.data.startswith("cancel:"))
+async def handle_cancel_running(callback: CallbackQuery) -> None:
+    """Cancel a running transcription from its progress-message button."""
+    task_id = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id if callback.from_user else 0
+    if cancel_task(task_id, user_id):
+        await callback.answer("Отменяю…")
+    else:
+        await callback.answer("Задача уже завершена.")
 
 
 async def _extract_text_from_message(callback: CallbackQuery) -> Optional[str]:

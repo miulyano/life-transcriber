@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from bot.config import settings
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.source_meta import SourceMetadata
+from bot.services.task_registry import get_semaphore
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
@@ -84,7 +85,11 @@ async def _process_upload(
     started_at = time.monotonic()
 
     try:
-        async with ProgressReporter.for_chat(bot, user_id, "Готовлю аудио…") as reporter:
+        # get_semaphore() caps simultaneous transcriptions within this process
+        # (the webapp runs separately from the bot, so each has its own cap).
+        async with get_semaphore(), ProgressReporter.for_chat(
+            bot, user_id, "Готовлю аудио…"
+        ) as reporter:
             try:
                 prepare_started_at = time.monotonic()
                 audio_path = await prepare_audio_for_transcription(

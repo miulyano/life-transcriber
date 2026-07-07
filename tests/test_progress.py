@@ -99,8 +99,15 @@ class FakeBot:
         self.raise_not_modified_next = False
         self.delete_should_fail = False
 
-    async def edit_message_text(self, chat_id, message_id, text):
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "text": text})
+    async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "reply_markup": reply_markup,
+            }
+        )
         if self.raise_not_modified_next:
             self.raise_not_modified_next = False
             raise TelegramBadRequest(method=None, message="message is not modified")
@@ -127,6 +134,8 @@ class FakeMessage:
 
     async def reply(self, text: str, **kwargs):
         self.replies.append(text)
+        self.reply_markups = getattr(self, "reply_markups", [])
+        self.reply_markups.append(kwargs.get("reply_markup"))
         self._next_id += 1
         return FakeStatusMessage(self.chat.id, self._next_id, text)
 
@@ -308,9 +317,16 @@ class FakeChatBot(FakeBot):
         self.sent: list[dict] = []
         self._next_id = message_id
 
-    async def send_message(self, chat_id: int, text: str):
+    async def send_message(self, chat_id: int, text: str, reply_markup=None):
         self._next_id += 1
-        self.sent.append({"chat_id": chat_id, "text": text, "message_id": self._next_id})
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "message_id": self._next_id,
+                "reply_markup": reply_markup,
+            }
+        )
         return FakeStatusMessage(chat_id, self._next_id, text)
 
 
@@ -344,6 +360,61 @@ async def test_for_chat_fail_edits_without_delete():
     fail_edits = [e for e in bot.edits if "Не удалось" in e["text"]]
     assert fail_edits
     assert fail_edits[-1]["text"].startswith("❌ ")
+
+
+# ---------------------------------------------------------------------------
+# reply_markup + cancelled()
+# ---------------------------------------------------------------------------
+
+def _markup():
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✖️ Отменить", callback_data="cancel:abc")]
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_reply_markup_passed_to_initial_reply_and_edits():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    kb = _markup()
+    async with ProgressReporter(
+        msg, "Скачиваю…", tick_seconds=0, sleep=_noop_sleep, reply_markup=kb
+    ) as r:
+        await r.set_phase("Транскрибирую…")
+        await r.finish()
+    assert msg.reply_markups == [kb]
+    phase_edits = [e for e in bot.edits if "Транскрибирую" in e["text"]]
+    assert phase_edits
+    assert all(e["reply_markup"] is kb for e in phase_edits)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_edits_without_markup_and_no_delete():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(
+        msg, "Скачиваю…", tick_seconds=0, sleep=_noop_sleep, reply_markup=_markup()
+    ) as r:
+        await r.cancelled()
+    assert bot.deleted == []
+    assert bot.edits[-1]["text"] == "✖️ Отменено"
+    assert bot.edits[-1]["reply_markup"] is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_triggers_cancelled_not_fail():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    with pytest.raises(asyncio.CancelledError):
+        async with ProgressReporter(msg, "Скачиваю…", tick_seconds=0, sleep=_noop_sleep):
+            raise asyncio.CancelledError()
+    assert bot.deleted == []
+    assert bot.edits[-1]["text"] == "✖️ Отменено"
+    assert not any(e["text"].startswith("❌") for e in bot.edits)
 
 
 @pytest.mark.asyncio

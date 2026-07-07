@@ -1,3 +1,4 @@
+import asyncio
 from io import BytesIO
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
@@ -6,13 +7,19 @@ from aiogram.types import InaccessibleMessage, Message
 
 from bot.handlers.callbacks import (
     _extract_text_from_message,
+    handle_cancel_running,
     handle_cleanup,
     handle_summary,
     handle_timecode_choice,
 )
-from bot.services import pending_jobs
+from bot.services import pending_jobs, task_registry
 from bot.services.pending_jobs import PendingJob
 from bot.utils import text as text_mod
+
+
+async def _drain_spawned():
+    """Wait for tasks spawned by handle_timecode_choice to finish."""
+    await asyncio.gather(*(rt.task for rt in list(task_registry._running.values())))
 
 
 @pytest.fixture(autouse=True)
@@ -453,8 +460,11 @@ async def test_tc_link_runs_pipeline_with_timecodes():
 
     with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
         await handle_timecode_choice(cb)
+        await _drain_spawned()
 
-    mock_process.assert_awaited_once_with(job.message, "https://example.com/v", timecodes=True)
+    mock_process.assert_awaited_once_with(
+        job.message, "https://example.com/v", timecodes=True, cancel_token=ANY
+    )
     cb.answer.assert_awaited_once_with()
     cb.message.delete.assert_awaited_once()
 
@@ -466,8 +476,37 @@ async def test_tc_link_runs_pipeline_without_timecodes():
 
     with patch("bot.handlers.links.process_link", new_callable=AsyncMock) as mock_process:
         await handle_timecode_choice(cb)
+        await _drain_spawned()
 
     assert mock_process.await_args.kwargs["timecodes"] is False
+
+
+async def test_tc_two_clicks_spawn_two_parallel_tasks():
+    """Два pending-вопроса → два клика → обе задачи запущены независимо."""
+    job1 = _pending_link_job()
+    job2 = _pending_link_job()
+    id1 = pending_jobs.put_job(job1)
+    id2 = pending_jobs.put_job(job2)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    urls: list[str] = []
+
+    async def slow_process(message, url, *, timecodes=True, cancel_token=None):
+        urls.append(url)
+        started.set()
+        await release.wait()
+
+    with patch("bot.handlers.links.process_link", side_effect=slow_process):
+        await handle_timecode_choice(_tc_callback(f"tc:1:{id1}"))
+        await started.wait()  # первая задача уже работает и не завершена
+        await handle_timecode_choice(_tc_callback(f"tc:0:{id2}"))
+        assert len(task_registry._running) == 2  # обе живы одновременно
+        release.set()
+        await _drain_spawned()
+
+    assert urls == ["https://example.com/v", "https://example.com/v"]
+    assert task_registry._running == {}
 
 
 async def test_tc_media_forwards_job_fields():
@@ -487,6 +526,7 @@ async def test_tc_media_forwards_job_fields():
 
     with patch("bot.handlers._tg_media.process_tg_media", new_callable=AsyncMock) as mock_process:
         await handle_timecode_choice(cb)
+        await _drain_spawned()
 
     mock_process.assert_awaited_once_with(
         job.message,
@@ -498,6 +538,7 @@ async def test_tc_media_forwards_job_fields():
         filename_hint="movie.mp4",
         source_type="video",
         timecodes=True,
+        cancel_token=ANY,
     )
 
 
@@ -553,3 +594,48 @@ async def test_tc_cancel_expired_still_deletes_message():
     mock_process.assert_not_awaited()
     cb.answer.assert_awaited_once_with("Отменено.")
     cb.message.delete.assert_awaited_once()
+
+
+# ---------- cancel: (отмена запущенной транскрибации) ----------
+
+
+async def test_cancel_running_task_cancels_and_answers():
+    release = asyncio.Event()
+
+    async def hang(_tid):
+        await release.wait()
+
+    task_id = task_registry.spawn_transcription(777, hang)
+    task = task_registry._running[task_id].task
+    await asyncio.sleep(0)  # task стартовала — кнопка отмены существует только после старта
+    cb = _tc_callback(f"cancel:{task_id}")
+
+    await handle_cancel_running(cb)
+
+    cb.answer.assert_awaited_once_with("Отменяю…")
+    await task  # _runner глотает CancelledError — task завершается штатно
+    await asyncio.sleep(0)  # done_callback чистит реестр
+    assert task_registry._running == {}
+
+
+async def test_cancel_finished_or_unknown_task_answers_done():
+    cb = _tc_callback("cancel:deadbeef")
+    await handle_cancel_running(cb)
+    cb.answer.assert_awaited_once_with("Задача уже завершена.")
+
+
+async def test_cancel_foreign_user_cannot_cancel():
+    release = asyncio.Event()
+
+    async def hang(_tid):
+        await release.wait()
+
+    task_id = task_registry.spawn_transcription(777, hang)
+    cb = _tc_callback(f"cancel:{task_id}", user_id=999)
+
+    await handle_cancel_running(cb)
+
+    cb.answer.assert_awaited_once_with("Задача уже завершена.")
+    assert task_id in task_registry._running  # задача жива
+    release.set()
+    await _drain_spawned()

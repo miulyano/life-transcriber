@@ -162,3 +162,74 @@ async def test_get_status_exhausted(tmp_paths):
     status = await store.get_status(111)
     assert status.is_exhausted
     assert status.remaining_seconds == 0
+
+
+# ---------- reserve / release / commit (in-flight резервирование) ----------
+
+
+@pytest.mark.asyncio
+async def test_reserve_no_limit_user_never_raises(tmp_paths):
+    store = UsageStore(path=tmp_paths["usage"], limits_path=tmp_paths["limits"])
+    for _ in range(5):
+        await store.reserve(999, 10_000.0)
+
+
+@pytest.mark.asyncio
+async def test_reserve_blocks_when_used_plus_inflight_at_limit(tmp_paths):
+    with open(tmp_paths["limits"], "w") as f:
+        json.dump({"111": 1}, f)
+    store = UsageStore(path=tmp_paths["usage"], limits_path=tmp_paths["limits"])
+    await store.add_seconds(111, 3500.0)
+    # Первый джоб у края лимита проходит (историческая семантика overdraft)…
+    await store.reserve(111, 200.0)
+    # …но второй уже блокируется резервом первого: 3500 + 200 >= 3600.
+    with pytest.raises(LimitExceededError):
+        await store.reserve(111, 100.0)
+
+
+@pytest.mark.asyncio
+async def test_release_frees_reservation(tmp_paths):
+    with open(tmp_paths["limits"], "w") as f:
+        json.dump({"111": 1}, f)
+    store = UsageStore(path=tmp_paths["usage"], limits_path=tmp_paths["limits"])
+    await store.add_seconds(111, 3500.0)
+    await store.reserve(111, 200.0)
+    await store.release(111, 200.0)
+    # Резерв снят — новый джоб снова проходит.
+    await store.reserve(111, 100.0)
+
+
+@pytest.mark.asyncio
+async def test_commit_swaps_reservation_for_actual(tmp_paths):
+    with open(tmp_paths["limits"], "w") as f:
+        json.dump({"111": 10}, f)
+    store = UsageStore(path=tmp_paths["usage"], limits_path=tmp_paths["limits"])
+    await store.reserve(111, 100.0)
+    await store.commit(111, 100.0, 250.0)
+    assert await store.get_used_seconds(111) == 250.0
+    assert store._inflight == {}
+
+
+@pytest.mark.asyncio
+async def test_release_never_goes_negative(tmp_paths):
+    store = UsageStore(path=tmp_paths["usage"], limits_path=tmp_paths["limits"])
+    await store.reserve(111, 50.0)
+    await store.release(111, 500.0)
+    assert store._inflight == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reserves_only_one_fits(tmp_paths):
+    """N параллельных reserve у края лимита — проходит ровно один."""
+    with open(tmp_paths["limits"], "w") as f:
+        json.dump({"111": 1}, f)
+    store = UsageStore(path=tmp_paths["usage"], limits_path=tmp_paths["limits"])
+    await store.add_seconds(111, 3599.0)
+
+    results = await asyncio.gather(
+        *[store.reserve(111, 600.0) for _ in range(5)], return_exceptions=True
+    )
+    ok = [r for r in results if r is None]
+    blocked = [r for r in results if isinstance(r, LimitExceededError)]
+    assert len(ok) == 1
+    assert len(blocked) == 4

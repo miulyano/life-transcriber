@@ -7,7 +7,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramRetryAfter,
 )
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 BAR_WIDTH = 10
 TICK_SECONDS = 2.0
@@ -61,8 +61,9 @@ class ProgressReporter:
         *,
         tick_seconds: float = TICK_SECONDS,
         sleep: SleepFn = asyncio.sleep,
+        reply_markup: Optional[InlineKeyboardMarkup] = None,
     ) -> None:
-        self._init_state(initial_label, tick_seconds, sleep)
+        self._init_state(initial_label, tick_seconds, sleep, reply_markup)
         self._message = message
         self._bot = message.bot
         self._initial_chat_id: Optional[int] = None
@@ -76,20 +77,26 @@ class ProgressReporter:
         *,
         tick_seconds: float = TICK_SECONDS,
         sleep: SleepFn = asyncio.sleep,
+        reply_markup: Optional[InlineKeyboardMarkup] = None,
     ) -> "ProgressReporter":
         self = cls.__new__(cls)
-        self._init_state(initial_label, tick_seconds, sleep)
+        self._init_state(initial_label, tick_seconds, sleep, reply_markup)
         self._message = None
         self._bot = bot
         self._initial_chat_id = chat_id
         return self
 
     def _init_state(
-        self, initial_label: str, tick_seconds: float, sleep: SleepFn
+        self,
+        initial_label: str,
+        tick_seconds: float,
+        sleep: SleepFn,
+        reply_markup: Optional[InlineKeyboardMarkup] = None,
     ) -> None:
         self._label = initial_label
         self._tick_seconds = tick_seconds
         self._sleep = sleep
+        self._reply_markup = reply_markup
 
         self._chat_id: Optional[int] = None
         self._message_id: Optional[int] = None
@@ -107,12 +114,16 @@ class ProgressReporter:
 
     async def __aenter__(self) -> "ProgressReporter":
         if self._message is not None:
-            self._status_message = await self._message.reply(self._compose())
+            self._status_message = await self._message.reply(
+                self._compose(), reply_markup=self._reply_markup
+            )
             self._chat_id = self._status_message.chat.id
             self._message_id = self._status_message.message_id
             self._last_rendered = self._status_message.text
         else:
-            sent = await self._bot.send_message(self._initial_chat_id, self._compose())
+            sent = await self._bot.send_message(
+                self._initial_chat_id, self._compose(), reply_markup=self._reply_markup
+            )
             self._status_message = sent
             self._chat_id = self._initial_chat_id
             self._message_id = sent.message_id
@@ -122,7 +133,9 @@ class ProgressReporter:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if not self._resolved:
-            if exc is not None:
+            if exc_type is asyncio.CancelledError:
+                await self.cancelled()
+            elif exc is not None:
                 await self.fail(f"Ошибка: {exc}")
             else:
                 await self._stop_task()
@@ -166,11 +179,23 @@ class ProgressReporter:
         self._resolved = True
         self._stopped = True
         await self._stop_task()
+        # No reply_markup: the cancel button must not survive a terminal state.
         with suppress(TelegramBadRequest, TelegramForbiddenError):
             await self._bot.edit_message_text(
                 chat_id=self._chat_id,
                 message_id=self._message_id,
                 text=f"❌ {text}",
+            )
+
+    async def cancelled(self) -> None:
+        self._resolved = True
+        self._stopped = True
+        await self._stop_task()
+        with suppress(TelegramBadRequest, TelegramForbiddenError):
+            await self._bot.edit_message_text(
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+                text="✖️ Отменено",
             )
 
     def _compose(self) -> str:
@@ -199,6 +224,7 @@ class ProgressReporter:
                     chat_id=self._chat_id,
                     message_id=self._message_id,
                     text=text,
+                    reply_markup=self._reply_markup,
                 )
                 self._last_rendered = text
             except TelegramBadRequest:

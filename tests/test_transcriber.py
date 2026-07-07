@@ -495,3 +495,29 @@ async def test_transcribe_polls_through_queued_and_processing(tmp_path, fake_pol
     # queued → 0.05, processing → some value in (0.05, 0.90], completed → 1.0
     assert fractions[0] == pytest.approx(0.05)
     assert fractions[-1] == pytest.approx(1.0)
+
+
+# ---------- _build_config: speaker_options ----------
+
+
+def test_build_config_no_speaker_options_by_default():
+    cfg = transcriber_module._build_config()
+    assert cfg.speaker_options is None
+    assert cfg.speaker_labels is True
+
+
+def test_build_config_speaker_options_from_settings(monkeypatch):
+    monkeypatch.setattr(transcriber_module.settings, "DIARIZATION_MIN_SPEAKERS", 1)
+    monkeypatch.setattr(transcriber_module.settings, "DIARIZATION_MAX_SPEAKERS", 3)
+    cfg = transcriber_module._build_config()
+    assert cfg.speaker_options is not None
+    assert cfg.speaker_options.min_speakers_expected == 1
+    assert cfg.speaker_options.max_speakers_expected == 3
+
+
+def test_build_config_speaker_options_max_only(monkeypatch):
+    monkeypatch.setattr(transcriber_module.settings, "DIARIZATION_MAX_SPEAKERS", 2)
+    cfg = transcriber_module._build_config()
+    assert cfg.speaker_options is not None
+    assert cfg.speaker_options.min_speakers_expected is None
+    assert cfg.speaker_options.max_speakers_expected == 2

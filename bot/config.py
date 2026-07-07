@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # — useful if your audio is always one known language and you want max
     # accuracy on short clips (autodetect is unreliable below ~30 sec).
     FORCE_LANGUAGE_CODE: Optional[str] = None
+    # Hard bounds for AssemblyAI speaker diarization. Without them the model
+    # may split a long two-person recording into phantom extra speakers
+    # (default ceiling is 30 for 10+ min audio). Both optional.
+    DIARIZATION_MIN_SPEAKERS: Optional[int] = None
+    DIARIZATION_MAX_SPEAKERS: Optional[int] = None
     GPT_MODEL: str = "gpt-4o"
     MAX_CONCURRENT_TRANSCRIPTIONS: int = 3
     TEMP_DIR: str = "/tmp/transcriber"

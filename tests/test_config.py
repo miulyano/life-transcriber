@@ -39,6 +39,8 @@ def test_defaults():
     assert s.FORCE_LANGUAGE_CODE is None
     assert s.GPT_MODEL == "gpt-4o"
     assert s.MAX_CONCURRENT_TRANSCRIPTIONS == 3
+    assert s.DIARIZATION_MIN_SPEAKERS is None
+    assert s.DIARIZATION_MAX_SPEAKERS is None
     assert s.TEMP_DIR == "/tmp/transcriber"
     assert s.COBALT_API_URL == "http://cobalt:9000"
     assert s.YTDLP_PROXY is None

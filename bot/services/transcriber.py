@@ -95,9 +95,19 @@ aai.settings.api_key = settings.ASSEMBLYAI_API_KEY
 
 
 def _build_config() -> aai.TranscriptionConfig:
+    # Hard caps on the speaker count (min/max are boundaries, not hints) —
+    # without them AssemblyAI allows up to 30 speakers on 10+ min audio and
+    # tends to split short interjections into phantom extra speakers.
+    speaker_options = None
+    if settings.DIARIZATION_MIN_SPEAKERS or settings.DIARIZATION_MAX_SPEAKERS:
+        speaker_options = aai.types.SpeakerOptions(
+            min_speakers_expected=settings.DIARIZATION_MIN_SPEAKERS,
+            max_speakers_expected=settings.DIARIZATION_MAX_SPEAKERS,
+        )
     cfg = aai.TranscriptionConfig(
         speech_models=[settings.ASSEMBLYAI_SPEECH_MODEL],
         speaker_labels=True,
+        speaker_options=speaker_options,
         punctuate=True,
         format_text=True,
         disfluencies=False,

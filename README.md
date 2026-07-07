@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.11.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.13.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -126,6 +126,7 @@ ALLOWED_USER_IDS=123456789,987654321
 - `MIN_SUMMARY_LEN=500` — минимальная длина текста (символов), при которой появляется кнопка «📝 Краткий конспект»
 - `ASSEMBLYAI_SPEECH_MODEL=universal` — модель AssemblyAI (`universal` | `nano` | `slam-1`)
 - `FORCE_LANGUAGE_CODE=` — если задан (например `ru`), отключает автодетект языка; полезно для коротких клипов < 30 сек, где автодетект нестабилен
+- `DIARIZATION_MIN_SPEAKERS=` / `DIARIZATION_MAX_SPEAKERS=` — жёсткие границы числа спикеров для диаризации (обе опциональны). Без них AssemblyAI допускает до 30 спикеров на записях от 10 минут и может выделять фантомных «лишних» из коротких реплик. Если контент — в основном интервью/подкасты, поставь `DIARIZATION_MAX_SPEAKERS=3`; лишние голоса вливаются в существующие метки, поэтому записи с большим числом участников будут склеены
 - `WORD_BOOST_FILE=bot/data/word_boost.txt` — путь к файлу с доменными терминами (по одному на строку, комментарии через `#`); директория монтируется volume, можно пополнять без пересборки образа
 - `WORD_BOOST_LEVEL=high` — сила буста терминов (`low` | `default` | `high`)
 - `CUSTOM_SPELLING_FILE=bot/data/custom_spelling.json` — JSON-карта `{"распознанная форма": "правильная форма"}` для пост-обработки текста

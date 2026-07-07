@@ -24,12 +24,27 @@ class _Reporter:
 class _NoLimitStore:
     def __init__(self):
         self.commits: list[tuple[int, float]] = []
+        self.reserves: list[tuple[int, float]] = []
+        self.releases: list[tuple[int, float]] = []
 
-    async def assert_within_limit(self, user_id: int) -> None:
-        return None
+    async def reserve(self, user_id: int, estimated_seconds: float) -> None:
+        self.reserves.append((user_id, estimated_seconds))
 
-    async def add_seconds(self, user_id: int, seconds: float) -> None:
-        self.commits.append((user_id, seconds))
+    async def release(self, user_id: int, estimated_seconds: float) -> None:
+        self.releases.append((user_id, estimated_seconds))
+
+    async def commit(
+        self, user_id: int, estimated_seconds: float, actual_seconds: float
+    ) -> None:
+        self.commits.append((user_id, actual_seconds))
+
+
+@pytest.fixture(autouse=True)
+def _fake_probe_duration(monkeypatch):
+    """ffprobe не дергаем в тестах — фиксированная оценка длительности."""
+    monkeypatch.setattr(
+        pipeline_module, "probe_duration", AsyncMock(return_value=120.0)
+    )
 
 
 class _SpyTranscriptStore:
@@ -190,7 +205,7 @@ async def test_pipeline_limit_exceeded_no_save(monkeypatch):
     from bot.services.usage_store import LimitExceededError
 
     class _BlockedStore(_NoLimitStore):
-        async def assert_within_limit(self, user_id: int) -> None:
+        async def reserve(self, user_id: int, estimated_seconds: float) -> None:
             raise LimitExceededError(5)
 
     monkeypatch.setattr(pipeline_module, "transcribe", AsyncMock(return_value=_result()))

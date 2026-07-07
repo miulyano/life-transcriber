@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Awaitable, Callable, Optional, Protocol
 
+from bot.services.media import probe_duration
 from bot.services.source_meta import SourceMetadata
 from bot.services.transcriber import transcribe
 from bot.services.transcript_store import TranscriptStore, get_transcript_store
@@ -37,10 +38,11 @@ async def run_transcription_pipeline(
 ) -> None:
     """Transcribe audio (AssemblyAI) and deliver the formatted result.
 
-    Перед запуском проверяет месячный лимит часов для ``user_id`` —
-    кидает :class:`bot.services.usage_store.LimitExceededError`, если расход
-    уже не вмещается. После успешной транскрибации списывает реальный
-    duration из ответа AssemblyAI.
+    Перед запуском резервирует оценку длительности (ffprobe) в месячном
+    лимите часов для ``user_id`` — кидает
+    :class:`bot.services.usage_store.LimitExceededError`, если расход вместе
+    с уже запущенными задачами не вмещается. После успешной транскрибации
+    резерв заменяется реальным duration из ответа AssemblyAI.
 
     Phases visible to the user:
     - "Транскрибирую…" — set by the caller before invoking this function.
@@ -48,16 +50,21 @@ async def run_transcription_pipeline(
     - "Отправляю результат…" — set here after transcription completes.
     """
     store = usage_store or get_store()
-    await store.assert_within_limit(user_id)
+    estimated_sec = (await probe_duration(audio_path)) or 0.0
+    await store.reserve(user_id, estimated_sec)
 
-    result = await transcribe(
-        audio_path,
-        source_meta=source_meta,
-        on_phase=reporter.set_phase,
-        on_progress=reporter.set_progress,
-        on_progress_fraction=reporter.set_progress_fraction,
-    )
-    await store.add_seconds(user_id, result.audio_duration_sec)
+    try:
+        result = await transcribe(
+            audio_path,
+            source_meta=source_meta,
+            on_phase=reporter.set_phase,
+            on_progress=reporter.set_progress,
+            on_progress_fraction=reporter.set_progress_fraction,
+        )
+    except BaseException:  # including asyncio.CancelledError
+        await store.release(user_id, estimated_sec)
+        raise
+    await store.commit(user_id, estimated_sec, result.audio_duration_sec)
     # Persist before delivering: a Telegram failure must not lose the
     # transcript, and a storage failure must not block delivery.
     try:

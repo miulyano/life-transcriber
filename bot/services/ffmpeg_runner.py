@@ -10,6 +10,10 @@ async def run_ffmpeg(*args: str) -> None:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.communicate()
+    try:
+        await proc.communicate()
+    except asyncio.CancelledError:
+        proc.kill()
+        raise
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed with code {proc.returncode}")

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # accuracy on short clips (autodetect is unreliable below ~30 sec).
     FORCE_LANGUAGE_CODE: Optional[str] = None
     GPT_MODEL: str = "gpt-4o"
+    MAX_CONCURRENT_TRANSCRIPTIONS: int = 3
     TEMP_DIR: str = "/tmp/transcriber"
     COBALT_API_URL: str = "http://cobalt:9000"
     INSTAGRAM_COOKIES_PATH: Optional[str] = None

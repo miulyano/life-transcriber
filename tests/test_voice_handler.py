@@ -8,7 +8,7 @@ async def test_voice_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
     events = []
 
     class Reporter:
-        def __init__(self, _message, label):
+        def __init__(self, _message, label, **_kwargs):
             events.append(("init", label))
 
         async def __aenter__(self):

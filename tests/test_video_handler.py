@@ -9,7 +9,7 @@ async def test_video_file_keeps_progress_until_result_is_sent(tmp_path, monkeypa
     audio_path = tmp_path / "audio.mp3"
 
     class Reporter:
-        def __init__(self, _message, label):
+        def __init__(self, _message, label, **_kwargs):
             events.append(("init", label))
 
         async def __aenter__(self):

@@ -72,6 +72,9 @@ class UsageStore:
         self._path = path or settings.USAGE_FILE
         self._limits_path = limits_path or settings.LIMITS_FILE
         self._lock = asyncio.Lock()
+        # Seconds reserved by in-flight jobs — closes the check-then-debit gap
+        # when several transcriptions of one user run concurrently.
+        self._inflight: dict[int, float] = {}
 
     def _read(self) -> dict[str, dict[str, float]]:
         if not os.path.exists(self._path):
@@ -121,6 +124,54 @@ class UsageStore:
     def _limit_for(self, user_id: int) -> Optional[int]:
         limits = load_limits(self._limits_path)
         return limits.get(user_id)
+
+    def _add_seconds_locked(self, user_id: int, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        data = self._read()
+        user_data = data.setdefault(str(user_id), {})
+        period = current_period()
+        user_data[period] = float(user_data.get(period, 0.0)) + float(seconds)
+        self._write(data)
+
+    def _release_locked(self, user_id: int, estimated_seconds: float) -> None:
+        left = self._inflight.get(user_id, 0.0) - max(0.0, float(estimated_seconds))
+        if left > 0:
+            self._inflight[user_id] = left
+        else:
+            self._inflight.pop(user_id, None)
+
+    async def reserve(self, user_id: int, estimated_seconds: float) -> None:
+        """Reserve estimated seconds before a job starts.
+
+        Raises LimitExceededError if recorded usage plus already-reserved
+        in-flight seconds have reached the user's monthly limit. Like the
+        historical check, the job that fits under the limit may still overrun
+        the remainder — only its actual duration is debited on commit.
+        """
+        limit_hours = self._limit_for(user_id)
+        est = max(0.0, float(estimated_seconds))
+        async with self._lock:
+            if limit_hours is not None:
+                used = float(
+                    self._read().get(str(user_id), {}).get(current_period(), 0.0)
+                )
+                if used + self._inflight.get(user_id, 0.0) >= limit_hours * 3600:
+                    raise LimitExceededError(limit_hours)
+            self._inflight[user_id] = self._inflight.get(user_id, 0.0) + est
+
+    async def release(self, user_id: int, estimated_seconds: float) -> None:
+        """Drop a reservation without debiting (job failed or was cancelled)."""
+        async with self._lock:
+            self._release_locked(user_id, estimated_seconds)
+
+    async def commit(
+        self, user_id: int, estimated_seconds: float, actual_seconds: float
+    ) -> None:
+        """Atomically swap the reservation for the actual recorded usage."""
+        async with self._lock:
+            self._release_locked(user_id, estimated_seconds)
+            self._add_seconds_locked(user_id, actual_seconds)
 
     async def assert_within_limit(self, user_id: int) -> None:
         """Raise LimitExceededError(limit_hours) if user has used >= limit this month."""

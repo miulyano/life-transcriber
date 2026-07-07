@@ -38,6 +38,7 @@ def test_defaults():
     assert s.WORD_BOOST_LEVEL == "high"
     assert s.FORCE_LANGUAGE_CODE is None
     assert s.GPT_MODEL == "gpt-4o"
+    assert s.MAX_CONCURRENT_TRANSCRIPTIONS == 3
     assert s.TEMP_DIR == "/tmp/transcriber"
     assert s.COBALT_API_URL == "http://cobalt:9000"
     assert s.YTDLP_PROXY is None

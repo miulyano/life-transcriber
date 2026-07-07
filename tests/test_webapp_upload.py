@@ -60,7 +60,9 @@ async def test_process_upload_prepares_audio_before_transcribing(tmp_path, monke
         # Uploads are files — their (optional) title is a filename, not a real title.
         ("pipeline", str(audio), 111, _SM(title_is_filename=True)),
     ]
-    send_transcript.assert_awaited_once_with(bot, 111, "готовый текст", None)
+    send_transcript.assert_awaited_once_with(
+        bot, 111, "готовый текст", None, source_type="webapp"
+    )
     bot.send_message.assert_awaited_once()
     first_send = bot.send_message.await_args
     assert first_send.args[0] == 111

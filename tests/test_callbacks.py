@@ -276,7 +276,25 @@ async def test_handle_cleanup_from_cache():
     cb.answer.assert_awaited_once_with()
     cb.message.reply_document.assert_awaited_once()
     caption = cb.message.reply_document.await_args.kwargs["caption"]
-    assert caption == "Очищенный текст: Заголовок"
+    # Cached without a source_type → footer degrades to the timecode part only.
+    assert caption == "Очищенный текст: Заголовок\nбез таймкодов"
+
+
+async def test_handle_cleanup_caption_shows_cached_source():
+    source_text = "Заголовок\n\nНу это тестовый текст."
+    h = text_mod._store_text(source_text, "youtube")
+    cb = _make_callback(text=None)
+    cb.data = f"cleanup:{h}"
+    cb.message.reply_document = AsyncMock()
+
+    with patch(
+        "bot.handlers.callbacks.cleanup_transcript", new_callable=AsyncMock
+    ) as mock_cleanup:
+        mock_cleanup.return_value = "Тестовый текст."
+        await handle_cleanup(cb)
+
+    caption = cb.message.reply_document.await_args.kwargs["caption"]
+    assert caption == "Очищенный текст: Заголовок\nИсточник: YouTube · без таймкодов"
 
 
 async def test_handle_cleanup_fallback_document():
@@ -326,7 +344,7 @@ async def test_handle_cleanup_caption_uses_original_title_not_cleaned_first_line
         await handle_cleanup(cb)
 
     caption = cb.message.reply_document.await_args.kwargs["caption"]
-    assert caption == "Очищенный текст: Реальный заголовок"
+    assert caption == "Очищенный текст: Реальный заголовок\nбез таймкодов"
 
 
 async def test_handle_cleanup_file_starts_with_original_title_when_dropped():
@@ -463,7 +481,11 @@ async def test_tc_link_runs_pipeline_with_timecodes():
         await _drain_spawned()
 
     mock_process.assert_awaited_once_with(
-        job.message, "https://example.com/v", timecodes=True, cancel_token=ANY
+        job.message,
+        "https://example.com/v",
+        timecodes=True,
+        source_type="link",
+        cancel_token=ANY,
     )
     cb.answer.assert_awaited_once_with()
     cb.message.delete.assert_awaited_once()
@@ -492,7 +514,7 @@ async def test_tc_two_clicks_spawn_two_parallel_tasks():
     release = asyncio.Event()
     urls: list[str] = []
 
-    async def slow_process(message, url, *, timecodes=True, cancel_token=None):
+    async def slow_process(message, url, *, timecodes=True, source_type="link", cancel_token=None):
         urls.append(url)
         started.set()
         await release.wait()

@@ -14,7 +14,13 @@ from bot.services.task_registry import cancel_task, spawn_transcription
 from bot.utils.filename import build_filename, extract_title, split_header_and_body
 from bot.utils.markdown import markdown_to_telegram_html
 from bot.utils.progress import ProgressReporter
-from bot.utils.text import _store_text, get_cached_text, strip_timecodes
+from bot.utils.source_labels import format_source_line
+from bot.utils.text import (
+    _store_text,
+    get_cached_source_type,
+    get_cached_text,
+    strip_timecodes,
+)
 
 router = Router()
 
@@ -61,7 +67,11 @@ async def handle_timecode_choice(callback: CallbackQuery) -> None:
         spawn_transcription(
             user_id,
             lambda tid: process_link(
-                job.message, job.url, timecodes=timecodes, cancel_token=tid
+                job.message,
+                job.url,
+                timecodes=timecodes,
+                source_type=job.source_type,
+                cancel_token=tid,
             ),
         )
     else:
@@ -193,6 +203,11 @@ async def handle_cleanup(callback: CallbackQuery) -> None:
             if original_title
             else "Очищенный текст"
         )
+        # Cleanup always works on the plain (non-timecoded) cached variant.
+        source_line = format_source_line(
+            get_cached_source_type(text_hash), timecoded=False
+        )
+        caption = f"{caption}\n{source_line}"
         await callback.message.reply_document(
             BufferedInputFile(final_text.encode("utf-8"), filename=filename),
             caption=caption,

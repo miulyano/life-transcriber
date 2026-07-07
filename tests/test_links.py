@@ -80,6 +80,7 @@ async def test_handle_link_asks_timecode_choice(monkeypatch):
     assert job.kind == "link"
     assert job.url == "https://example.com/video"
     assert job.user_id == 777
+    assert job.source_type == "link"  # non-platform URL falls back to generic "link"
     message.reply.assert_awaited_once()
     keyboard = message.reply.await_args.kwargs["reply_markup"]
     callback_datas = [b.callback_data for row in keyboard.inline_keyboard for b in row]
@@ -128,7 +129,7 @@ async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkey
         await reporter.set_phase("Отправляю результат…")
         await deliver_text("transcript")
 
-    async def fake_reply_text_or_file(_message, text, file_text=None):
+    async def fake_reply_text_or_file(_message, text, file_text=None, *, source_type=None):
         events.append(("reply", text))
 
     monkeypatch.setattr(links, "ProgressReporter", Reporter)

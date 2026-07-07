@@ -20,6 +20,7 @@ from bot.config import settings
 from bot.services.formatter import render_timecode_segments
 from bot.services.transcript_store import get_transcript_store
 from bot.utils.filename import build_filename, split_header_and_body
+from bot.utils.source_labels import source_label
 from bot.utils.progress import ProgressReporter
 from webapp.delivery import send_transcript_to_chat
 from webapp.deps import resolve_user_id
@@ -44,6 +45,8 @@ async def list_transcripts(user_id: int = Depends(resolve_user_id)) -> dict:
                 "channel": r.channel,
                 "created_at": r.created_at,
                 "source_type": r.source_type,
+                "source_label": source_label(r.source_type),
+                "has_timecodes": r.segments_path is not None,
                 "duration_sec": r.duration_sec,
                 "char_count": r.char_count,
             }
@@ -76,7 +79,9 @@ async def delete_transcript(
     return {"ok": True}
 
 
-async def _deliver_resend(user_id: int, text: str, file_text: str | None) -> None:
+async def _deliver_resend(
+    user_id: int, text: str, file_text: str | None, source_type: str | None
+) -> None:
     """Send a stored transcript to chat. Runs as a background task.
 
     Same status model as _process_upload: a ProgressReporter status message
@@ -91,7 +96,9 @@ async def _deliver_resend(user_id: int, text: str, file_text: str | None) -> Non
             bot, user_id, "Отправляю результат…"
         ) as reporter:
             try:
-                await send_transcript_to_chat(bot, user_id, text, file_text)
+                await send_transcript_to_chat(
+                    bot, user_id, text, file_text, source_type=source_type
+                )
                 await reporter.finish()
             except Exception:
                 logger.exception("Resend to chat failed for user %s", user_id)
@@ -125,5 +132,7 @@ async def resend_transcript(
 
     # Respond immediately; delivery happens in the background with an
     # in-chat status message (same model as the upload flow).
-    background_tasks.add_task(_deliver_resend, user_id, text, file_text)
+    background_tasks.add_task(
+        _deliver_resend, user_id, text, file_text, record.source_type
+    )
     return {"ok": True}

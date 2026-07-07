@@ -124,8 +124,21 @@ async def test_list_only_own_rows(client, store):
     items = res.json()["items"]
     assert [i["title"] for i in items] == ["mine"]
     assert set(items[0]) == {
-        "id", "title", "channel", "created_at", "source_type", "duration_sec", "char_count"
+        "id", "title", "channel", "created_at", "source_type", "source_label",
+        "has_timecodes", "duration_sec", "char_count"
     }
+    assert items[0]["source_label"] == "Голосовое"  # _seed uses source_type="voice"
+    assert items[0]["has_timecodes"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_has_timecodes_when_segments_saved(client, store):
+    segments = [TimecodeSegment(start_ms=0, text="Привет.", speaker=None)]
+    await _seed(store, segments=segments)
+
+    res = client.get("/api/transcripts", headers=_init_headers(111))
+    items = res.json()["items"]
+    assert items[0]["has_timecodes"] is True
 
 
 # --- File download ---
@@ -194,7 +207,9 @@ async def test_resend_plain(client, store, sent):
         json={"timecoded": False},
     )
     assert res.status_code == 200
-    send_mock.assert_awaited_once_with(bot, 111, "Тест\n\nПривет.", None)
+    send_mock.assert_awaited_once_with(
+        bot, 111, "Тест\n\nПривет.", None, source_type="voice"
+    )
     bot.session.close.assert_awaited_once()
 
 

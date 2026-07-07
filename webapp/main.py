@@ -122,7 +122,11 @@ async def _process_upload(
 
                 async def deliver_text(text: str, file_text: str | None = None) -> None:
                     await send_transcript_to_chat(
-                        bot, user_id, text, file_text if timecodes else None
+                        bot,
+                        user_id,
+                        text,
+                        file_text if timecodes else None,
+                        source_type="webapp",
                     )
 
                 try:

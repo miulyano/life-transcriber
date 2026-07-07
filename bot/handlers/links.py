@@ -8,7 +8,7 @@ from aiogram.types import Message
 
 from bot.config import settings
 from bot.handlers._timecode_prompt import ask_timecodes
-from bot.services.downloader import download_audio
+from bot.services.downloader import detect_link_source_type, download_audio
 from bot.services.error_messages import format_download_error
 from bot.services.pending_jobs import PendingJob
 from bot.services.source_meta import SourceMetadata
@@ -36,7 +36,7 @@ async def handle_link(message: Message) -> None:
             user_id=message.from_user.id if message.from_user else 0,
             kind="link",
             message=message,
-            source_type="link",
+            source_type=detect_link_source_type(url),
             url=url,
         ),
     )
@@ -47,6 +47,7 @@ async def process_link(
     url: str,
     *,
     timecodes: bool = True,
+    source_type: str = "link",
     cancel_token: str | None = None,
 ) -> None:
     """Download audio from the URL and run the transcription pipeline."""
@@ -70,7 +71,12 @@ async def process_link(
                 await reporter.set_phase("Транскрибирую…")
 
                 async def deliver_text(text: str, file_text: str | None = None) -> None:
-                    await reply_text_or_file(message, text, file_text if timecodes else None)
+                    await reply_text_or_file(
+                        message,
+                        text,
+                        file_text if timecodes else None,
+                        source_type=source_type,
+                    )
 
                 try:
                     await run_transcription_pipeline(
@@ -79,7 +85,7 @@ async def process_link(
                         deliver_text=deliver_text,
                         user_id=user_id,
                         source_meta=source_meta,
-                        source_type="link",
+                        source_type=source_type,
                     )
                 except LimitExceededError as exc:
                     limit_exceeded = exc

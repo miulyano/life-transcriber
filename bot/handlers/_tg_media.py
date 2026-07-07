@@ -60,7 +60,12 @@ async def process_tg_media(
                     transcribe_path = media_path
 
                 async def deliver_text(text: str, file_text: str | None = None) -> None:
-                    await reply_text_or_file(message, text, file_text if timecodes else None)
+                    await reply_text_or_file(
+                        message,
+                        text,
+                        file_text if timecodes else None,
+                        source_type=source_type,
+                    )
 
                 try:
                     await run_transcription_pipeline(

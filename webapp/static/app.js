@@ -120,6 +120,7 @@ function renderCard(item) {
   meta.className = 'meta';
   const parts = [fmtDate(item.created_at)];
   if (item.duration_sec > 0) parts.push(fmtDuration(item.duration_sec));
+  if (item.source_label) parts.push(item.source_label);
   meta.textContent = parts.filter(Boolean).join(' · ');
   li.appendChild(meta);
 
@@ -131,10 +132,12 @@ function renderCard(item) {
   resendBtn.onclick = () => resendTranscript(item.id, false, resendBtn);
   actions.appendChild(resendBtn);
 
-  const resendTcBtn = document.createElement('button');
-  resendTcBtn.textContent = '🕒 С таймкодами';
-  resendTcBtn.onclick = () => resendTranscript(item.id, true, resendTcBtn);
-  actions.appendChild(resendTcBtn);
+  if (item.has_timecodes) {
+    const resendTcBtn = document.createElement('button');
+    resendTcBtn.textContent = '🕒 С таймкодами';
+    resendTcBtn.onclick = () => resendTranscript(item.id, true, resendTcBtn);
+    actions.appendChild(resendTcBtn);
+  }
 
   const delBtn = document.createElement('button');
   delBtn.className = 'danger';

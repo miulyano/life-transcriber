@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -24,9 +25,39 @@ from bot.services.yandex_music import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SourceMetadata", "download_audio", "extract_audio"]
+__all__ = [
+    "SourceMetadata",
+    "detect_link_source_type",
+    "download_audio",
+    "extract_audio",
+    "is_youtube_url",
+]
 
 _EMPTY = SourceMetadata()
+
+YOUTUBE_URL_RE = re.compile(
+    r"^https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:/|$)",
+    re.IGNORECASE,
+)
+
+
+def is_youtube_url(url: str) -> bool:
+    return bool(YOUTUBE_URL_RE.match(url))
+
+
+def detect_link_source_type(url: str) -> str:
+    """Coarse platform label for a URL; matches the dispatch order of download_audio()."""
+    if is_yandex_disk_url(url):
+        return "yandex_disk"
+    if is_instagram_url(url):
+        return "instagram"
+    if is_facebook_url(url):
+        return "facebook"
+    if is_yandex_music_url(url):
+        return "yandex_music"
+    if is_youtube_url(url):
+        return "youtube"
+    return "link"
 
 
 def _clean(value: object) -> Optional[str]:

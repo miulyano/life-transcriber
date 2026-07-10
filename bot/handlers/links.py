@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import re
 
-from aiogram import F, Router
+from aiogram import Router
+from aiogram.enums import MessageEntityType
 from aiogram.types import Message
 
 from bot.config import settings
@@ -26,10 +27,36 @@ URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _friendly_error = format_download_error
 
 
-@router.message(F.text.regexp(URL_RE))
+def extract_urls(message: Message) -> list[str]:
+    """Collect http(s) URLs from text/caption: raw matches, url entities and
+    text_link entities (hyperlinks whose URL is not in the visible text)."""
+    urls: list[str] = []
+    for text, entities in (
+        (message.text, message.entities),
+        (message.caption, message.caption_entities),
+    ):
+        if not text:
+            continue
+        for entity in entities or ():
+            if entity.type == MessageEntityType.TEXT_LINK and entity.url:
+                urls.append(entity.url)
+            elif entity.type == MessageEntityType.URL:
+                urls.append(entity.extract_from(text))
+        urls.extend(URL_RE.findall(text))
+    urls = [u for u in urls if URL_RE.match(u)]
+    return list(dict.fromkeys(urls))
+
+
+def _contains_url(message: Message) -> bool:
+    # Media messages (video/voice/video_note) are picked up by their routers,
+    # which are registered before this one in bot/main.py. If an audio handler
+    # is ever added, its router must also be registered before links.router.
+    return bool(extract_urls(message))
+
+
+@router.message(_contains_url)
 async def handle_link(message: Message) -> None:
-    urls = URL_RE.findall(message.text)
-    url = urls[0]
+    url = extract_urls(message)[0]
     await ask_timecodes(
         message,
         PendingJob(

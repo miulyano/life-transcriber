@@ -125,7 +125,7 @@ async def test_list_only_own_rows(client, store):
     assert [i["title"] for i in items] == ["mine"]
     assert set(items[0]) == {
         "id", "title", "channel", "created_at", "source_type", "source_label",
-        "has_timecodes", "duration_sec", "char_count"
+        "has_timecodes", "timecodes_available", "duration_sec", "char_count"
     }
     assert items[0]["source_label"] == "Голосовое"  # _seed uses source_type="voice"
     assert items[0]["has_timecodes"] is False
@@ -139,6 +139,49 @@ async def test_list_has_timecodes_when_segments_saved(client, store):
     res = client.get("/api/transcripts", headers=_init_headers(111))
     items = res.json()["items"]
     assert items[0]["has_timecodes"] is True
+
+
+SEGMENTS = [TimecodeSegment(start_ms=0, text="Привет.", speaker=None)]
+
+
+@pytest.mark.asyncio
+async def test_list_timecodes_available_true_for_long_with_segments(client, store, monkeypatch):
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", 50)
+    await _seed(store, body="Тест\n\n" + "п" * 100, segments=SEGMENTS)
+
+    items = client.get("/api/transcripts", headers=_init_headers(111)).json()["items"]
+    assert items[0]["timecodes_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_timecodes_available_false_for_short_with_segments(client, store, monkeypatch):
+    """Сам баг: сегменты есть, но короткий текст уйдёт inline без таймкодов."""
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", 50)
+    await _seed(store, body="Тест\n\nПривет.", segments=SEGMENTS)
+
+    items = client.get("/api/transcripts", headers=_init_headers(111)).json()["items"]
+    assert items[0]["has_timecodes"] is True
+    assert items[0]["timecodes_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_timecodes_available_false_without_segments(client, store, monkeypatch):
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", 50)
+    await _seed(store, body="Тест\n\n" + "п" * 100, segments=[])
+
+    items = client.get("/api/transcripts", headers=_init_headers(111)).json()["items"]
+    assert items[0]["timecodes_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_timecodes_available_boundary(client, store, monkeypatch):
+    """len(body) == порогу → inline-ветка (строгое >), таймкоды недоступны."""
+    body = "x" * 30
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", len(body))
+    await _seed(store, body=body, segments=SEGMENTS)
+
+    items = client.get("/api/transcripts", headers=_init_headers(111)).json()["items"]
+    assert items[0]["timecodes_available"] is False
 
 
 # --- File download ---
@@ -214,7 +257,8 @@ async def test_resend_plain(client, store, sent):
 
 
 @pytest.mark.asyncio
-async def test_resend_timecoded_renders_segments(client, store, sent):
+async def test_resend_timecoded_renders_segments(client, store, sent, monkeypatch):
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", 10)
     send_mock, _bot = sent
     segments = [
         TimecodeSegment(start_ms=0, text="Привет.", speaker=None),
@@ -232,9 +276,25 @@ async def test_resend_timecoded_renders_segments(client, store, sent):
 
 
 @pytest.mark.asyncio
-async def test_resend_timecoded_without_segments_falls_back_to_plain(client, store, sent):
+async def test_resend_timecoded_without_segments_falls_back_to_plain(client, store, sent, monkeypatch):
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", 10)
     send_mock, _bot = sent
     record = await _seed(store, body="Тест\n\nПривет.", segments=[])
+    res = client.post(
+        f"/api/transcripts/{record.id}/resend",
+        headers=_init_headers(111),
+        json={"timecoded": True},
+    )
+    assert res.status_code == 200
+    assert send_mock.await_args.args[3] is None
+
+
+@pytest.mark.asyncio
+async def test_resend_timecoded_short_ignores_flag(client, store, sent, monkeypatch):
+    """Короткая запись уйдёт inline — флаг timecoded молча игнорируется."""
+    monkeypatch.setattr(settings, "LONG_TEXT_THRESHOLD", 50)
+    send_mock, _bot = sent
+    record = await _seed(store, body="Тест\n\nПривет.", segments=SEGMENTS)
     res = client.post(
         f"/api/transcripts/{record.id}/resend",
         headers=_init_headers(111),

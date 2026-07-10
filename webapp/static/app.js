@@ -132,7 +132,7 @@ function renderCard(item) {
   resendBtn.onclick = () => resendTranscript(item.id, false, resendBtn);
   actions.appendChild(resendBtn);
 
-  if (item.has_timecodes) {
+  if (item.timecodes_available) {
     const resendTcBtn = document.createElement('button');
     resendTcBtn.textContent = '🕒 С таймкодами';
     resendTcBtn.onclick = () => resendTranscript(item.id, true, resendTcBtn);

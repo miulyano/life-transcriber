@@ -47,6 +47,8 @@ async def list_transcripts(user_id: int = Depends(resolve_user_id)) -> dict:
                 "source_type": r.source_type,
                 "source_label": source_label(r.source_type),
                 "has_timecodes": r.segments_path is not None,
+                "timecodes_available": r.segments_path is not None
+                and r.char_count > settings.LONG_TEXT_THRESHOLD,
                 "duration_sec": r.duration_sec,
                 "char_count": r.char_count,
             }
@@ -123,7 +125,10 @@ async def resend_transcript(
 
     text = await store.read_text(record)
     file_text: str | None = None
-    if body and body.timecoded:
+    # Timecodes are only deliverable on the file path (len > threshold);
+    # for short transcripts the flag is silently ignored, mirroring
+    # prepare_transcript's send_as_file logic.
+    if body and body.timecoded and len(text) > settings.LONG_TEXT_THRESHOLD:
         segments = await store.read_segments(record)
         if segments:
             rendered = render_timecode_segments(segments)

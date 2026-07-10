@@ -2,9 +2,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from aiogram.types import MessageEntity
+
 from bot.handlers import links
-from bot.handlers.links import URL_RE
+from bot.handlers.links import URL_RE, extract_urls
 from bot.services.user_facing_error import UserFacingError
+
+
+def make_message(text=None, caption=None, entities=None, caption_entities=None):
+    message = MagicMock()
+    message.text = text
+    message.caption = caption
+    message.entities = entities
+    message.caption_entities = caption_entities
+    return message
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -57,6 +68,68 @@ def test_friendly_error_accepts_typed_provider_error():
     assert text == "Не удалось скачать видео"
 
 
+def test_extract_urls_from_plain_text():
+    message = make_message(text="первая https://youtu.be/a и вторая https://vk.com/video123 и снова https://youtu.be/a")
+    assert extract_urls(message) == ["https://youtu.be/a", "https://vk.com/video123"]
+
+
+def test_extract_urls_from_caption():
+    message = make_message(caption="Смотри https://youtu.be/x")
+    assert extract_urls(message) == ["https://youtu.be/x"]
+
+
+def test_extract_urls_text_link_entity():
+    # Гиперссылка: URL живёт в entity.url, в видимом тексте его нет
+    message = make_message(
+        text="Смотри видео",
+        entities=[MessageEntity(type="text_link", offset=0, length=6, url="https://youtu.be/x")],
+    )
+    assert extract_urls(message) == ["https://youtu.be/x"]
+
+
+def test_extract_urls_text_link_entity_in_caption():
+    message = make_message(
+        caption="Пост с гиперссылкой",
+        caption_entities=[MessageEntity(type="text_link", offset=0, length=4, url="https://youtu.be/c")],
+    )
+    assert extract_urls(message) == ["https://youtu.be/c"]
+
+
+def test_extract_urls_entity_offsets_utf16():
+    # Эмодзи = 2 UTF-16 code units; entity даёт точные границы без хвостового «!»
+    text = "😀😀 https://youtu.be/x!"
+    message = make_message(
+        text=text,
+        entities=[MessageEntity(type="url", offset=5, length=18)],
+    )
+    assert extract_urls(message)[0] == "https://youtu.be/x"
+
+
+def test_extract_urls_entity_beats_regex_tail():
+    # Entity идёт раньше regex-находки, поэтому urls[0] — чистый URL без «!»
+    text = "Смотри https://youtu.be/x!"
+    message = make_message(
+        text=text,
+        entities=[MessageEntity(type="url", offset=7, length=18)],
+    )
+    urls = extract_urls(message)
+    assert urls[0] == "https://youtu.be/x"
+
+
+def test_extract_urls_schemeless_entity_ignored():
+    # Telegram размечает example.com как url-entity, но без схемы бот его не берёт
+    message = make_message(
+        text="зайди на example.com",
+        entities=[MessageEntity(type="url", offset=9, length=11)],
+    )
+    assert extract_urls(message) == []
+
+
+def test_contains_url_filter_negative():
+    message = make_message(text="просто текст", caption=None)
+    assert links._contains_url(message) is False
+
+
 async def test_handle_link_asks_timecode_choice(monkeypatch):
     registered = []
 
@@ -68,8 +141,7 @@ async def test_handle_link_asks_timecode_choice(monkeypatch):
 
     monkeypatch.setattr(_timecode_prompt, "put_job", fake_put_job)
 
-    message = MagicMock()
-    message.text = "https://example.com/video"
+    message = make_message(text="https://example.com/video")
     message.from_user.id = 777
     message.reply = AsyncMock()
 
@@ -85,6 +157,31 @@ async def test_handle_link_asks_timecode_choice(monkeypatch):
     keyboard = message.reply.await_args.kwargs["reply_markup"]
     callback_datas = [b.callback_data for row in keyboard.inline_keyboard for b in row]
     assert callback_datas == ["tc:1:pid123", "tc:0:pid123", "tc:x:pid123"]
+
+
+async def test_handle_link_from_caption(monkeypatch):
+    """Пересланный пост с медиа: URL в caption, message.text = None."""
+    registered = []
+
+    def fake_put_job(job):
+        registered.append(job)
+        return "pid456"
+
+    from bot.handlers import _timecode_prompt
+
+    monkeypatch.setattr(_timecode_prompt, "put_job", fake_put_job)
+
+    message = make_message(caption="Смотри https://youtu.be/abc")
+    message.from_user.id = 777
+    message.reply = AsyncMock()
+
+    await links.handle_link(message)
+
+    assert len(registered) == 1
+    job = registered[0]
+    assert job.kind == "link"
+    assert job.url == "https://youtu.be/abc"
+    message.reply.assert_awaited_once()
 
 
 async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkeypatch):

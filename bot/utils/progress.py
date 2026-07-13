@@ -155,9 +155,10 @@ class ProgressReporter:
         await self._do_edit(self._compose())
 
     async def set_progress_fraction(self, fraction: float) -> None:
+        # No immediate edit: sources may emit dozens of updates per second
+        # (yt-dlp download progress); the 2s ticker renders the stored value.
         self._fraction = max(0.0, min(1.0, fraction))
         self._progress = None
-        await self._do_edit(self._compose())
 
     async def finish(self) -> None:
         self._resolved = True
@@ -201,10 +202,12 @@ class ProgressReporter:
     def _compose(self) -> str:
         if self._fraction is not None:
             cells = round(self._fraction * BAR_WIDTH)
+            pct = int(self._fraction * 100)
             if self._fraction < 1.0:
                 cells = min(cells, BAR_WIDTH - 1)
+                pct = min(pct, 99)
             bar = render_determinate(cells, BAR_WIDTH)
-            return f"{self._label}\n{bar}"
+            return f"{self._label}\n{bar} {pct}%"
         if self._progress is not None:
             current, total = self._progress
             bar = render_determinate(current, total)

@@ -420,6 +420,42 @@ async def test_split_into_paragraphs_processes_all_chunks_for_long_text(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_split_into_paragraphs_reports_progress_per_chunk(monkeypatch):
+    async def _identity_chunk(chunk: str) -> str:
+        return chunk
+
+    monkeypatch.setattr(formatter, "_split_chunk", _identity_chunk)
+
+    calls: list[tuple[int, int]] = []
+
+    async def _on_progress(done: int, total: int) -> None:
+        calls.append((done, total))
+
+    sentence = "Это предложение. " * (2 * formatter.PARA_SPLIT_MAX_INPUT // 17 + 10)
+    await formatter.split_into_paragraphs(sentence, on_progress=_on_progress)
+
+    total = calls[0][1]
+    assert total > 1
+    assert calls == [(i, total) for i in range(total)] + [(total, total)]
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_single_chunk_skips_progress(monkeypatch):
+    async def _identity_chunk(chunk: str) -> str:
+        return chunk
+
+    monkeypatch.setattr(formatter, "_split_chunk", _identity_chunk)
+
+    calls: list[tuple[int, int]] = []
+
+    async def _on_progress(done: int, total: int) -> None:
+        calls.append((done, total))
+
+    await formatter.split_into_paragraphs("Короткий текст.", on_progress=_on_progress)
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_split_into_paragraphs_empty_returns_unchanged(monkeypatch):
     create = AsyncMock()
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)

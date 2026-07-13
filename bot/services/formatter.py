@@ -303,11 +303,20 @@ async def split_into_paragraphs(
         return text
     chunks = split_long_text(text, PARA_SPLIT_MAX_INPUT, prefer_boundaries=SENTENCE_BOUNDARIES)
     report = on_progress if len(chunks) > 1 else None
+
+    async def _emit(done: int) -> None:
+        # A failing progress callback must not abort formatting — the docstring
+        # promises the text is returned unchanged on any failure.
+        if report is None:
+            return
+        try:
+            await report(done, len(chunks))
+        except Exception:
+            logger.warning("split_into_paragraphs progress callback failed", exc_info=True)
+
     results = []
     for i, chunk in enumerate(chunks):
-        if report is not None:
-            await report(i, len(chunks))
+        await _emit(i)
         results.append(await _split_chunk(chunk))
-    if report is not None:
-        await report(len(chunks), len(chunks))
+    await _emit(len(chunks))
     return "\n\n".join(results)

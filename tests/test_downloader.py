@@ -95,3 +95,41 @@ async def test_download_audio_passes_progress_callback_to_ytdlp(monkeypatch):
 
     await download_audio("https://example.com/video", "/tmp", on_progress_fraction=_cb)
     assert received["on_progress_fraction"] is _cb
+
+
+@pytest.mark.asyncio
+async def test_download_with_ytdlp_kills_process_on_reader_error(monkeypatch, tmp_path):
+    """A readline failure (e.g. line over the StreamReader limit) must not leak
+    the yt-dlp child — proc.kill() is called before the error propagates."""
+    killed = {"count": 0}
+
+    class BoomStream:
+        async def readline(self):
+            raise ValueError("Separator is not found, and chunk exceed the limit")
+
+    class EmptyStream:
+        async def readline(self):
+            return b""
+
+    class FakeProc:
+        returncode = None
+
+        def __init__(self):
+            self.stdout = BoomStream()
+            self.stderr = EmptyStream()
+
+        def kill(self):
+            killed["count"] += 1
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(downloader_module.asyncio, "create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ValueError):
+        await downloader_module._download_with_ytdlp("https://x/v", str(tmp_path))
+    assert killed["count"] == 1

@@ -231,6 +231,10 @@ async def _download_with_ytdlp(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # Default StreamReader line limit is 64 KiB; a verbose yt-dlp error
+        # dump on one line would raise ValueError from readline(). 1 MiB is
+        # far beyond any real yt-dlp line yet still bounded.
+        limit=1024 * 1024,
     )
 
     # Fragmented downloads restart byte counters and estimates jump around,
@@ -262,8 +266,13 @@ async def _download_with_ytdlp(
             _read_stream(proc.stderr, stderr_lines),
         )
         await proc.wait()
-    except asyncio.CancelledError:
+    except BaseException:
+        # Any failure — cancellation, a readline limit error, etc. — must not
+        # leak the yt-dlp child: kill it and reap so it can't block on a full
+        # pipe and hang as a zombie.
         proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.wait()
         raise
 
     if proc.returncode != 0:

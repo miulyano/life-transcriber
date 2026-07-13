@@ -5,7 +5,9 @@ from typing import Awaitable, Callable, Optional
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramNetworkError,
     TelegramRetryAfter,
+    TelegramServerError,
 )
 from aiogram.types import InlineKeyboardMarkup, Message
 
@@ -159,6 +161,10 @@ class ProgressReporter:
         # (yt-dlp download progress); the 2s ticker renders the stored value.
         self._fraction = max(0.0, min(1.0, fraction))
         self._progress = None
+        # Completion is a one-shot event, not a stream — flush it now so the
+        # 100% frame is not lost to the next set_phase before the ticker fires.
+        if self._fraction >= 1.0:
+            await self._do_edit(self._compose())
 
     async def finish(self) -> None:
         self._resolved = True
@@ -202,7 +208,7 @@ class ProgressReporter:
     def _compose(self) -> str:
         if self._fraction is not None:
             cells = round(self._fraction * BAR_WIDTH)
-            pct = int(self._fraction * 100)
+            pct = round(self._fraction * 100)
             if self._fraction < 1.0:
                 cells = min(cells, BAR_WIDTH - 1)
                 pct = min(pct, 99)
@@ -236,6 +242,11 @@ class ProgressReporter:
                 await self._sleep(e.retry_after)
             except TelegramForbiddenError:
                 self._stopped = True
+            except (TelegramNetworkError, TelegramServerError):
+                # Transient: leave _last_rendered unset so the next ticker
+                # edit retries. Do not let it kill the ticker task, which is
+                # now the sole renderer of fraction/percent updates.
+                pass
 
     async def _run(self) -> None:
         try:
@@ -253,6 +264,9 @@ class ProgressReporter:
         if self._task is None:
             return
         self._task.cancel()
-        with suppress(asyncio.CancelledError):
+        # The ticker is best-effort UI; if it already died with a stored
+        # exception, awaiting it must not resurface that error into a
+        # finish()/fail() call and turn a successful job into a failure.
+        with suppress(BaseException):
             await self._task
         self._task = None

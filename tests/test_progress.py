@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 
 from bot.utils.progress import (
     BAR_WIDTH,
@@ -97,6 +97,7 @@ class FakeBot:
         self.edits: list[dict] = []
         self.deleted: list[dict] = []
         self.raise_not_modified_next = False
+        self.raise_network_next = False
         self.delete_should_fail = False
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
@@ -111,6 +112,9 @@ class FakeBot:
         if self.raise_not_modified_next:
             self.raise_not_modified_next = False
             raise TelegramBadRequest(method=None, message="message is not modified")
+        if self.raise_network_next:
+            self.raise_network_next = False
+            raise TelegramNetworkError(method=None, message="connection reset")
 
     async def delete_message(self, chat_id, message_id):
         self.deleted.append({"chat_id": chat_id, "message_id": message_id})
@@ -335,6 +339,37 @@ async def test_fraction_overrides_progress_counter():
     assert fraction_edits
     assert fraction_edits[-1]["text"].count(FILLED) == round(0.7 * BAR_WIDTH)
     assert fraction_edits[-1]["text"].endswith(" 70%")
+
+
+@pytest.mark.asyncio
+async def test_fraction_one_flushes_immediately_without_ticker():
+    """Completion (1.0) is a one-shot event — the 100% frame must render on the
+    call, not wait for the 2s ticker that a following set_phase would preempt."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        edits_before = len(bot.edits)
+        await r.set_progress_fraction(1.0)  # no _let_ticker_render pumping
+        percent_edits = [e for e in bot.edits[edits_before:] if "%" in e["text"]]
+        assert percent_edits
+        assert percent_edits[-1]["text"].endswith(" 100%")
+        await r.finish()
+
+
+@pytest.mark.asyncio
+async def test_network_error_does_not_kill_ticker_or_corrupt_finish():
+    """A transient TelegramNetworkError from an edit must be swallowed: the
+    ticker (sole fraction renderer) survives and finish() still succeeds."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Скачиваю…", tick_seconds=0, sleep=_noop_sleep) as r:
+        bot.raise_network_next = True
+        await r.set_phase("Транскрибирую…")  # edit raises network → swallowed
+        await r.set_progress_fraction(0.5)
+        await _let_ticker_render()
+        assert any(e["text"].endswith(" 50%") for e in bot.edits)
+        await r.finish()
+    assert len(bot.deleted) == 1  # finish completed, not turned into an error
 
 
 @pytest.mark.asyncio

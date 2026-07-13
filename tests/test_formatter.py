@@ -440,6 +440,24 @@ async def test_split_into_paragraphs_reports_progress_per_chunk(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_split_into_paragraphs_progress_failure_does_not_abort(monkeypatch):
+    """A raising on_progress must not break formatting (docstring: unchanged on
+    any failure) — every chunk still gets processed."""
+    async def _identity_chunk(chunk: str) -> str:
+        return chunk
+
+    monkeypatch.setattr(formatter, "_split_chunk", _identity_chunk)
+
+    async def _boom(done: int, total: int) -> None:
+        raise RuntimeError("telegram down")
+
+    sentence = "Это предложение. " * (2 * formatter.PARA_SPLIT_MAX_INPUT // 17 + 10)
+    result = await formatter.split_into_paragraphs(sentence, on_progress=_boom)
+    assert result  # returned, not raised
+    assert "предложение" in result
+
+
+@pytest.mark.asyncio
 async def test_split_into_paragraphs_single_chunk_skips_progress(monkeypatch):
     async def _identity_chunk(chunk: str) -> str:
         return chunk

@@ -34,7 +34,7 @@ def test_trailing_comma_skipped():
 def test_defaults():
     s = _make("111")
     assert s.LONG_TEXT_THRESHOLD == 2000
-    assert s.ASSEMBLYAI_SPEECH_MODEL == "universal"
+    assert s.ASSEMBLYAI_SPEECH_MODEL == "universal-3-5-pro"
     assert s.WORD_BOOST_LEVEL == "high"
     assert s.FORCE_LANGUAGE_CODE is None
     assert s.GPT_MODEL == "gpt-4o"

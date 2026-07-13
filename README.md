@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.13.3-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.14.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -53,12 +53,12 @@ Universal-2 (с акустической диаризацией спикеров
 
 | Сервис | Что | Цена |
 |---|---|---|
-| AssemblyAI | Транскрибация Universal-2 + диаризация спикеров | ~$0.37 |
+| AssemblyAI | Транскрибация Universal-3.5 Pro ($0.21) + диаризация спикеров ($0.02) | ~$0.23 |
 | OpenAI GPT-4o | Распознавание имён спикеров (и заголовка, когда у источника нет своего названия) | ~$0.03 |
 | OpenAI GPT-4o | Краткий конспект (кнопка, опционально) | ~$0.04–0.07 |
-| **Итого** | без конспекта / с конспектом | **~$0.40 / ~$0.45–0.50** |
+| **Итого** | без конспекта / с конспектом | **~$0.26 / ~$0.30–0.33** |
 
-Цифры актуальны на апрель 2026. Проверяй актуальные тарифы:
+Цифры актуальны на июль 2026. Проверяй актуальные тарифы:
 [AssemblyAI Pricing](https://www.assemblyai.com/pricing) · [OpenAI Pricing](https://openai.com/api/pricing)
 
 ## Стек

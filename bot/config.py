@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     ALLOWED_USER_IDS: str  # comma-separated list, parsed via property
     LONG_TEXT_THRESHOLD: int = 2000
     MIN_SUMMARY_LEN: int = 500
-    ASSEMBLYAI_SPEECH_MODEL: str = "universal"  # universal | nano | slam-1
+    ASSEMBLYAI_SPEECH_MODEL: str = "universal-3-5-pro"  # universal-3-5-pro | universal | nano | slam-1
     WORD_BOOST_FILE: str = "bot/data/word_boost.txt"
     CUSTOM_SPELLING_FILE: str = "bot/data/custom_spelling.json"
     WORD_BOOST_LEVEL: str = "high"  # low | default | high

@@ -51,30 +51,39 @@ def test_parse_ytdlp_meta_takes_last_non_empty_line():
 # ---------- parse_progress_line ----------
 
 
+def test_parse_progress_line_uses_fragment_progress():
+    # Fragmented downloads report whole-file progress via fragment index/count.
+    # Bytes are per-fragment noise here and must be ignored; the old
+    # estimate-based path would freeze the bar near completion.
+    assert parse_progress_line("LTPROG 500 NA 3 12") == pytest.approx(0.25)
+
+
+def test_parse_progress_line_fragment_complete():
+    assert parse_progress_line("LTPROG 100 NA 12 12") == 1.0
+
+
 def test_parse_progress_line_with_total_bytes():
-    assert parse_progress_line("LTPROG 100 200 NA") == pytest.approx(0.5)
-
-
-def test_parse_progress_line_falls_back_to_estimate():
-    assert parse_progress_line("LTPROG 100 NA 400") == pytest.approx(0.25)
+    # Non-fragmented HTTP file: real total_bytes, no fragments.
+    assert parse_progress_line("LTPROG 100 200 NA NA") == pytest.approx(0.5)
 
 
 def test_parse_progress_line_no_total_returns_none():
-    assert parse_progress_line("LTPROG 100 NA NA") is None
-    assert parse_progress_line("LTPROG 100 0 NA") is None
+    # No fragments and no real total_bytes -> no number (indeterminate bar).
+    # The undersized total_bytes_estimate is never used as a denominator.
+    assert parse_progress_line("LTPROG 100 NA NA NA") is None
+    assert parse_progress_line("LTPROG 100 0 NA NA") is None
 
 
 def test_parse_progress_line_clamps_overshoot():
-    # Fragmented downloads can report downloaded > estimate.
-    assert parse_progress_line("LTPROG 500 400 NA") == 1.0
+    assert parse_progress_line("LTPROG 500 400 NA NA") == 1.0
 
 
 def test_parse_progress_line_ignores_non_progress_lines():
     assert parse_progress_line('{"title":"Video","uploader":"Au"}') is None
     assert parse_progress_line("") is None
     assert parse_progress_line("WARNING: something") is None
-    assert parse_progress_line("LTPROG garbage 100 NA") is None
-    assert parse_progress_line("LTPROG 100 200") is None  # wrong field count
+    assert parse_progress_line("LTPROG garbage 100 NA NA") is None
+    assert parse_progress_line("LTPROG 100 200 NA") is None  # wrong field count
 
 
 # ---------- download_audio progress plumbing ----------

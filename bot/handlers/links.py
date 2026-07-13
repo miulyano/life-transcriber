@@ -91,7 +91,11 @@ async def process_link(
             limit_exceeded: LimitExceededError | None = None
             try:
                 try:
-                    audio_path, source_meta = await download_audio(url, settings.TEMP_DIR)
+                    audio_path, source_meta = await download_audio(
+                        url,
+                        settings.TEMP_DIR,
+                        on_progress_fraction=reporter.set_progress_fraction,
+                    )
                 except RuntimeError as e:
                     await reporter.fail(_friendly_error(e))
                     return

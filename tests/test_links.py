@@ -214,7 +214,7 @@ async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkey
         async def fail(self, text):
             events.append(("fail", text))
 
-    async def fake_download_audio(url, _output_dir):
+    async def fake_download_audio(url, _output_dir, **_kwargs):
         events.append(("download", url))
         audio_path.write_bytes(b"audio")
         from bot.services.source_meta import SourceMetadata as _SM
@@ -269,10 +269,13 @@ async def test_process_link_queued_label_when_semaphore_busy(monkeypatch):
         async def set_phase(self, label):
             labels.append(label)
 
+        async def set_progress_fraction(self, _fraction):
+            pass
+
         async def finish(self):
             pass
 
-    async def fake_download_audio(url, _output_dir):
+    async def fake_download_audio(url, _output_dir, **_kwargs):
         from bot.services.source_meta import SourceMetadata as _SM
 
         return "/nonexistent/audio.mp3", _SM()
@@ -315,7 +318,10 @@ async def test_process_link_cancelled_cleans_temp_and_propagates(tmp_path, monke
         async def set_phase(self, label):
             pass
 
-    async def fake_download_audio(url, _output_dir):
+        async def set_progress_fraction(self, _fraction):
+            pass
+
+    async def fake_download_audio(url, _output_dir, **_kwargs):
         from bot.services.source_meta import SourceMetadata as _SM
 
         audio_path.write_bytes(b"audio")

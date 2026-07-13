@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 
 from bot.utils.progress import (
     BAR_WIDTH,
@@ -97,6 +97,7 @@ class FakeBot:
         self.edits: list[dict] = []
         self.deleted: list[dict] = []
         self.raise_not_modified_next = False
+        self.raise_network_next = False
         self.delete_should_fail = False
 
     async def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
@@ -111,6 +112,9 @@ class FakeBot:
         if self.raise_not_modified_next:
             self.raise_not_modified_next = False
             raise TelegramBadRequest(method=None, message="message is not modified")
+        if self.raise_network_next:
+            self.raise_network_next = False
+            raise TelegramNetworkError(method=None, message="connection reset")
 
     async def delete_message(self, chat_id, message_id):
         self.deleted.append({"chat_id": chat_id, "message_id": message_id})
@@ -236,77 +240,155 @@ async def test_finish_falls_back_to_edit_when_delete_fails():
 # set_progress_fraction
 # ---------------------------------------------------------------------------
 
+async def _let_ticker_render() -> None:
+    """set_progress_fraction only stores the value; the background ticker
+    (running on _noop_sleep) renders it on its next iteration."""
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
-async def test_fraction_zero_all_empty_no_counter():
+async def test_fraction_zero_all_empty_with_percent():
     bot = FakeBot()
     msg = FakeMessage(bot)
     async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
         await r.set_progress_fraction(0.0)
+        await _let_ticker_render()
         await r.finish()
-    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    fraction_edits = [e for e in bot.edits if "%" in e["text"]]
     assert fraction_edits
     last = fraction_edits[-1]["text"]
     assert FILLED not in last
     assert EMPTY * BAR_WIDTH in last
+    assert last.endswith(" 0%")
 
 
 @pytest.mark.asyncio
-async def test_fraction_one_all_filled_no_counter():
+async def test_fraction_one_all_filled_100_percent():
     bot = FakeBot()
     msg = FakeMessage(bot)
     async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
         await r.set_progress_fraction(1.0)
+        await _let_ticker_render()
         await r.finish()
-    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    fraction_edits = [e for e in bot.edits if "%" in e["text"]]
     assert fraction_edits
     last = fraction_edits[-1]["text"]
     assert EMPTY not in last
     assert FILLED * BAR_WIDTH in last
+    assert last.endswith(" 100%")
 
 
 @pytest.mark.asyncio
-async def test_fraction_below_one_does_not_render_full_bar():
+async def test_fraction_below_one_does_not_render_full_bar_or_100():
     bot = FakeBot()
     msg = FakeMessage(bot)
     async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
         await r.set_progress_fraction(0.95)
+        await _let_ticker_render()
         await r.finish()
-    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    fraction_edits = [e for e in bot.edits if "%" in e["text"]]
     assert fraction_edits
     last = fraction_edits[-1]["text"]
     assert last.count(FILLED) == BAR_WIDTH - 1
     assert last.count(EMPTY) == 1
+    assert last.endswith(" 95%")
 
 
 @pytest.mark.asyncio
-async def test_fraction_half_five_cells_no_counter():
+async def test_fraction_just_below_one_caps_at_99_percent():
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        await r.set_progress_fraction(0.995)
+        await _let_ticker_render()
+        await r.finish()
+    fraction_edits = [e for e in bot.edits if "%" in e["text"]]
+    assert fraction_edits
+    assert fraction_edits[-1]["text"].endswith(" 99%")
+
+
+@pytest.mark.asyncio
+async def test_fraction_half_five_cells_50_percent():
     bot = FakeBot()
     msg = FakeMessage(bot)
     async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
         await r.set_progress_fraction(0.5)
+        await _let_ticker_render()
         await r.finish()
-    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    fraction_edits = [e for e in bot.edits if "%" in e["text"]]
     assert fraction_edits
     last = fraction_edits[-1]["text"]
     assert last.count(FILLED) == 5
     assert last.count(EMPTY) == 5
     assert "/" not in last
+    assert last.endswith(" 50%")
 
 
 @pytest.mark.asyncio
 async def test_fraction_overrides_progress_counter():
-    """Switching from set_progress (with counter) to set_progress_fraction (no counter)."""
+    """Switching from set_progress (with counter) to set_progress_fraction (percent)."""
     bot = FakeBot()
     msg = FakeMessage(bot)
     async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
         await r.set_progress(3, 10)        # determinate with counter
-        await r.set_progress_fraction(0.7)  # switch to fraction — no counter
+        await r.set_progress_fraction(0.7)  # switch to fraction — percent
+        await _let_ticker_render()
         await r.finish()
-    last_edit = bot.edits[-1]["text"] if bot.edits else ""
-    # last meaningful edit before finish should be fraction (no slash)
-    fraction_edits = [e for e in bot.edits if "Транскрибирую" in e["text"] and "/" not in e["text"]]
+    fraction_edits = [e for e in bot.edits if "%" in e["text"] and "/" not in e["text"]]
     assert fraction_edits
     assert fraction_edits[-1]["text"].count(FILLED) == round(0.7 * BAR_WIDTH)
+    assert fraction_edits[-1]["text"].endswith(" 70%")
+
+
+@pytest.mark.asyncio
+async def test_fraction_one_flushes_immediately_without_ticker():
+    """Completion (1.0) is a one-shot event — the 100% frame must render on the
+    call, not wait for the 2s ticker that a following set_phase would preempt."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Транскрибирую…", tick_seconds=0, sleep=_noop_sleep) as r:
+        edits_before = len(bot.edits)
+        await r.set_progress_fraction(1.0)  # no _let_ticker_render pumping
+        percent_edits = [e for e in bot.edits[edits_before:] if "%" in e["text"]]
+        assert percent_edits
+        assert percent_edits[-1]["text"].endswith(" 100%")
+        await r.finish()
+
+
+@pytest.mark.asyncio
+async def test_network_error_does_not_kill_ticker_or_corrupt_finish():
+    """A transient TelegramNetworkError from an edit must be swallowed: the
+    ticker (sole fraction renderer) survives and finish() still succeeds."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Скачиваю…", tick_seconds=0, sleep=_noop_sleep) as r:
+        bot.raise_network_next = True
+        await r.set_phase("Транскрибирую…")  # edit raises network → swallowed
+        await r.set_progress_fraction(0.5)
+        await _let_ticker_render()
+        assert any(e["text"].endswith(" 50%") for e in bot.edits)
+        await r.finish()
+    assert len(bot.deleted) == 1  # finish completed, not turned into an error
+
+
+@pytest.mark.asyncio
+async def test_fraction_updates_do_not_edit_immediately():
+    """Rapid fraction updates (yt-dlp) are rendered by the ticker, not per call."""
+    bot = FakeBot()
+    msg = FakeMessage(bot)
+    async with ProgressReporter(msg, "Скачиваю…", tick_seconds=0, sleep=_noop_sleep) as r:
+        edits_before = len(bot.edits)
+        await r.set_progress_fraction(0.1)
+        await r.set_progress_fraction(0.2)
+        await r.set_progress_fraction(0.3)
+        # No yields between the calls above — no edits could have happened.
+        assert len(bot.edits) == edits_before
+        await _let_ticker_render()
+        percent_edits = [e for e in bot.edits if "%" in e["text"]]
+        assert len(percent_edits) == 1  # one render with the latest value
+        assert percent_edits[0]["text"].endswith(" 30%")
+        await r.finish()
 
 
 class FakeChatBot(FakeBot):

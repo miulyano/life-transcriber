@@ -48,7 +48,7 @@ def _silence_analyze(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _silence_split(monkeypatch):
-    async def _no_split(text: str) -> str:
+    async def _no_split(text: str, on_progress=None) -> str:
         return text
     monkeypatch.setattr(transcriber_module, "split_into_paragraphs", _no_split)
 
@@ -390,7 +390,7 @@ async def test_transcribe_single_speaker_calls_split_when_no_paragraphs(tmp_path
 
     split_calls: list[str] = []
 
-    async def _track_split(text: str) -> str:
+    async def _track_split(text: str, on_progress=None) -> str:
         split_calls.append(text)
         return text
 
@@ -406,6 +406,27 @@ async def test_transcribe_single_speaker_calls_split_when_no_paragraphs(tmp_path
 
     await transcriber_module.transcribe(str(tmp_path / "b.mp3"))
     assert len(split_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_transcribe_passes_on_progress_to_split(tmp_path, fake_polling, monkeypatch):
+    _submit_calls, holder = fake_polling
+    long_text = "Слово " * 60  # 360 chars, no \n\n
+    holder["statuses"] = [_make_status("completed", [_utt("A", long_text.strip())])]
+
+    received = {}
+
+    async def _track_split(text: str, on_progress=None) -> str:
+        received["on_progress"] = on_progress
+        return text
+
+    monkeypatch.setattr(transcriber_module, "split_into_paragraphs", _track_split)
+
+    async def _cb(done: int, total: int) -> None:
+        pass
+
+    await transcriber_module.transcribe(str(tmp_path / "a.mp3"), on_progress=_cb)
+    assert received["on_progress"] is _cb
 
 
 @pytest.mark.asyncio

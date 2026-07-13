@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Optional
 
 from openai import AsyncOpenAI
 
@@ -287,15 +287,36 @@ async def _split_chunk(chunk: str) -> str:
         return chunk
 
 
-async def split_into_paragraphs(text: str) -> str:
+async def split_into_paragraphs(
+    text: str,
+    on_progress: Optional[Callable[[int, int], Awaitable[None]]] = None,
+) -> str:
     """Split single-speaker solid text into semantic paragraphs via GPT.
 
     Long texts are processed chunk-by-chunk so the entire text is formatted,
     not just the first PARA_SPLIT_MAX_INPUT characters.
+    ``on_progress(done, total)`` is reported per chunk, but only when there
+    is more than one chunk — a 1/1 counter carries no information.
     Returns the original text unchanged on any failure.
     """
     if not text.strip():
         return text
     chunks = split_long_text(text, PARA_SPLIT_MAX_INPUT, prefer_boundaries=SENTENCE_BOUNDARIES)
-    results = [await _split_chunk(chunk) for chunk in chunks]
+    report = on_progress if len(chunks) > 1 else None
+
+    async def _emit(done: int) -> None:
+        # A failing progress callback must not abort formatting — the docstring
+        # promises the text is returned unchanged on any failure.
+        if report is None:
+            return
+        try:
+            await report(done, len(chunks))
+        except Exception:
+            logger.warning("split_into_paragraphs progress callback failed", exc_info=True)
+
+    results = []
+    for i, chunk in enumerate(chunks):
+        await _emit(i)
+        results.append(await _split_chunk(chunk))
+    await _emit(len(chunks))
     return "\n\n".join(results)

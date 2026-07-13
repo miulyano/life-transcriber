@@ -16,18 +16,37 @@ from bot.services.yandex_music import (
 )
 
 
+class _FakeStream:
+    """Minimal async line stream, as read by _download_with_ytdlp."""
+
+    def __init__(self, data: bytes = b""):
+        self._lines = data.splitlines(keepends=True)
+        self._i = 0
+
+    async def readline(self) -> bytes:
+        if self._i >= len(self._lines):
+            return b""
+        line = self._lines[self._i]
+        self._i += 1
+        return line
+
+
 class _FakeProcess:
     returncode = 0
 
-    async def communicate(self):
-        return b"", b""
+    def __init__(self, stdout: bytes = b"", stderr: bytes = b""):
+        self.stdout = _FakeStream(stdout)
+        self.stderr = _FakeStream(stderr)
+
+    async def wait(self) -> int:
+        return self.returncode
 
 
-class _FailedProcess:
+class _FailedProcess(_FakeProcess):
     returncode = 1
 
-    async def communicate(self):
-        return b"", b"captcha"
+    def __init__(self):
+        super().__init__(stderr=b"captcha")
 
 
 @pytest.mark.parametrize("url", [
@@ -286,11 +305,11 @@ async def test_download_audio_wraps_yandex_music_ytdlp_error(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_download_audio_reports_yandex_music_region_block(tmp_path, monkeypatch):
-    class RegionBlockedProcess:
+    class RegionBlockedProcess(_FakeProcess):
         returncode = 1
 
-        async def communicate(self):
-            return b"", b"HTTP Error 451: Unavailable For Legal Reasons"
+        def __init__(self):
+            super().__init__(stderr=b"HTTP Error 451: Unavailable For Legal Reasons")
 
     monkeypatch.setattr(downloader_module.settings, "YANDEX_MUSIC_PROXY", None)
     monkeypatch.setattr(downloader_module.settings, "YTDLP_PROXY", None)

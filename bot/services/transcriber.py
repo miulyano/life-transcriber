@@ -185,7 +185,7 @@ async def transcribe(
     *,
     source_meta: Optional[SourceMetadata] = None,
     on_phase: Optional[PhaseCallback] = None,
-    on_progress: Optional[ProgressCallback] = None,  # unused, kept for API compat
+    on_progress: Optional[ProgressCallback] = None,
     on_progress_fraction: Optional[FractionCallback] = None,
 ) -> FormattedTranscript:
     """Transcribe audio and return a fully formatted transcript ready to deliver.
@@ -201,7 +201,9 @@ async def transcribe(
     - "Форматирую…" — when the GPT analysis step begins (title + speaker names).
     The caller is responsible for setting the initial "Транскрибирую…" phase.
     """
-    return await _transcribe_inner(audio_path, source_meta, on_phase, on_progress_fraction)
+    return await _transcribe_inner(
+        audio_path, source_meta, on_phase, on_progress, on_progress_fraction
+    )
 
 
 def _build_header(title: str, uploader: Optional[str]) -> str:
@@ -214,6 +216,7 @@ async def _transcribe_inner(
     audio_path: str,
     source_meta: Optional[SourceMetadata],
     on_phase: Optional[PhaseCallback],
+    on_progress: Optional[ProgressCallback],
     on_fraction: Optional[FractionCallback],
 ) -> FormattedTranscript:
     transcript = await _run_assemblyai(audio_path, on_fraction)
@@ -258,7 +261,7 @@ async def _transcribe_inner(
 
     body_text = render_with_speakers(utterances, name_map) if utterances else raw_text
     if speaker_count == 1 and "\n\n" not in body_text and len(body_text) > PARA_SPLIT_THRESHOLD:
-        body_text = await split_into_paragraphs(body_text)
+        body_text = await split_into_paragraphs(body_text, on_progress=on_progress)
 
     # Word texts skipped custom_spelling above, so apply it per segment; the
     # rendered file variant and the persisted segments stay identical.

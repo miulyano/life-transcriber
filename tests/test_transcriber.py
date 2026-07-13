@@ -142,10 +142,11 @@ async def test_transcribe_single_speaker_no_prefix(tmp_path, fake_polling):
 
 
 @pytest.mark.asyncio
-async def test_transcribe_passes_speaker_labels_and_word_boost(tmp_path, fake_polling, monkeypatch):
+async def test_transcribe_passes_speaker_labels_and_keyterms(tmp_path, fake_polling, monkeypatch):
     submit_calls, holder = fake_polling
     holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
 
+    monkeypatch.setattr(transcriber_module.settings, "ASSEMBLYAI_SPEECH_MODEL", "universal-3-5-pro")
     monkeypatch.setattr(transcriber_module, "_WORD_BOOST", ["aiogram", "yt-dlp"])
 
     await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
@@ -155,8 +156,26 @@ async def test_transcribe_passes_speaker_labels_and_word_boost(tmp_path, fake_po
     assert config.punctuate is True
     assert config.format_text is True
     assert config.disfluencies is False
+    # Universal-3.5 Pro rejects word_boost; terms go through keyterms_prompt.
+    assert config.keyterms_prompt == ["aiogram", "yt-dlp"]
+    assert config.word_boost is None
+    assert config.keyterms_prompt_options.keyterms_match_strength == "high"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_legacy_model_uses_word_boost(tmp_path, fake_polling, monkeypatch):
+    submit_calls, holder = fake_polling
+    holder["statuses"] = [_make_status("completed", [_utt("A", "ok")])]
+
+    monkeypatch.setattr(transcriber_module.settings, "ASSEMBLYAI_SPEECH_MODEL", "universal")
+    monkeypatch.setattr(transcriber_module, "_WORD_BOOST", ["aiogram", "yt-dlp"])
+
+    await transcriber_module.transcribe(str(tmp_path / "a.mp3"))
+
+    config = submit_calls[0]["config"]
     assert config.word_boost == ["aiogram", "yt-dlp"]
     assert str(config.boost_param).endswith("high")
+    assert config.keyterms_prompt is None
 
 
 @pytest.mark.asyncio

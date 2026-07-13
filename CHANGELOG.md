@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Транскрибация на Universal-3.5 Pro падала с `"word_boost" is not compatible with universal-3-5-pro`: эта модель (и Slam-1) не принимает `word_boost`. Термины из `word_boost.txt` теперь уходят через `keyterms_prompt` (с match strength `high`/`standard` по `WORD_BOOST_LEVEL`); старые модели (universal/best/nano) по-прежнему используют `word_boost`
+
 ### Changed
 
 - Модель транскрибации по умолчанию переключена с Universal-2 на **Universal-3.5 Pro** (`ASSEMBLYAI_SPEECH_MODEL=universal-3-5-pro`) — выше точность распознавания. Ориентировочная стоимость 1 часа: ~$0.23 STT + диаризация (было ~$0.37); итог ~$0.26 без конспекта / ~$0.30–0.33 с конспектом — см. README

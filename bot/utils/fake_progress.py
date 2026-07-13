@@ -7,6 +7,9 @@ FAKE_TICK_SECONDS = 0.5
 FAKE_CEILING = 0.95
 
 FractionCallback = Callable[[float], Awaitable[None]]
+# Fired once when a download switches to a postprocessing stage (e.g. yt-dlp
+# extracting the audio track) so the UI can leave the frozen download bar.
+PostprocessCallback = Callable[[], Awaitable[None]]
 
 
 async def _fake_progress_loop(

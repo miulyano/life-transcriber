@@ -98,6 +98,7 @@ async def process_link(
                         url,
                         settings.TEMP_DIR,
                         on_progress_fraction=reporter.set_progress_fraction,
+                        on_postprocess=lambda: reporter.set_phase("Готовлю аудио…"),
                     )
                 except RuntimeError as e:
                     # The friendly message hides the real cause; log it so

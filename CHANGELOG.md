@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Долгий «висяк» статуса скачивания на `99%`: yt-dlp больше не перекодирует звук в mp3 (`--audio-quality 0`), а извлекает аудиодорожку копией (`-f bestaudio/best --extract-audio --audio-format best`) — в транскрайбер уходит компактное аудио без затратного re-encode. Если извлечение всё же занимает время, показывается анимированный статус «Готовлю аудио…» вместо замороженного `99%`
+
 ## [1.13.2] – 2026-07-13
 
 ### Added

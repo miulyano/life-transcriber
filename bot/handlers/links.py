@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 
@@ -18,6 +19,8 @@ from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
 from bot.utils.text import reply_text_or_file
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -97,6 +100,9 @@ async def process_link(
                         on_progress_fraction=reporter.set_progress_fraction,
                     )
                 except RuntimeError as e:
+                    # The friendly message hides the real cause; log it so
+                    # transient provider failures stay diagnosable.
+                    logger.warning("Download failed for %s: %s", url, e)
                     await reporter.fail(_friendly_error(e))
                     return
                 await reporter.set_phase("Транскрибирую…")

@@ -244,6 +244,50 @@ async def test_process_link_keeps_progress_until_result_is_sent(tmp_path, monkey
     assert events.index(("reply", "transcript")) < events.index("finish")
 
 
+async def test_process_link_logs_download_error(tmp_path, monkeypatch, caplog):
+    """A yt-dlp failure is swallowed into a friendly message; the real error
+    text must still reach the logs so transient failures are diagnosable."""
+    import logging
+
+    failed = []
+
+    class Reporter:
+        def __init__(self, _message, label, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def set_phase(self, label):
+            pass
+
+        async def set_progress_fraction(self, _fraction):
+            pass
+
+        async def fail(self, text):
+            failed.append(text)
+
+    async def fake_download_audio(url, _output_dir, **_kwargs):
+        raise RuntimeError("yt-dlp failed (code 1): ERROR: [youtube] SABR streaming")
+
+    monkeypatch.setattr(links, "ProgressReporter", Reporter)
+    monkeypatch.setattr(links, "download_audio", fake_download_audio)
+
+    message = MagicMock()
+    message.from_user.id = 777
+
+    with caplog.at_level(logging.WARNING, logger="bot.handlers.links"):
+        await links.process_link(message, "https://example.com/video")
+
+    # User still gets the friendly message…
+    assert failed and "Не удалось скачать" in failed[0]
+    # …and the raw yt-dlp error is logged for diagnosis.
+    assert any("SABR streaming" in r.getMessage() for r in caplog.records)
+
+
 async def test_process_link_queued_label_when_semaphore_busy(monkeypatch):
     """Пока все слоты семафора заняты, статус-сообщение — «В очереди…»."""
     import asyncio

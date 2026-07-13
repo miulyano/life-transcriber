@@ -12,7 +12,7 @@ from typing import Optional
 
 from bot.config import settings
 from bot.services.facebook import download_from_facebook, is_facebook_url
-from bot.utils.fake_progress import FractionCallback
+from bot.utils.fake_progress import FractionCallback, PostprocessCallback
 from bot.services.instagram import download_from_instagram, is_instagram_url
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.source_meta import SourceMetadata
@@ -40,8 +40,11 @@ _EMPTY = SourceMetadata()
 # Unique prefix for --progress-template lines so parsing does not depend on
 # which stream (stdout/stderr) a given yt-dlp version writes progress to.
 PROGRESS_PREFIX = "LTPROG"
-# ffmpeg extract-audio postprocessing after the download has no progress of
-# its own, so the reported fraction is capped just below completion.
+# Prefix for postprocess (--audio-format best extraction) progress-template
+# lines, kept distinct from download lines so the UI can switch phase.
+POSTPROCESS_PREFIX = "LTPP"
+# Audio extraction (stream-copy) after the download has no fraction of its own,
+# so the reported download fraction is capped just below completion.
 _DOWNLOAD_FRACTION_CEILING = 0.99
 
 YOUTUBE_URL_RE = re.compile(
@@ -83,11 +86,13 @@ async def download_audio(
     url: str,
     output_dir: str,
     on_progress_fraction: Optional[FractionCallback] = None,
+    on_postprocess: Optional[PostprocessCallback] = None,
 ) -> tuple[str, SourceMetadata]:
     """Download audio from a URL and return (local_path, source_metadata).
 
     ``on_progress_fraction`` receives download progress 0..1 for yt-dlp
-    sources; other branches (Yandex Disk, Instagram, Facebook) do not
+    sources; ``on_postprocess`` fires once when yt-dlp starts extracting the
+    audio track. Other branches (Yandex Disk, Instagram, Facebook) do not
     report progress.
     """
     if is_yandex_disk_url(url):
@@ -135,6 +140,7 @@ async def download_audio(
                 output_dir,
                 proxy=settings.YANDEX_MUSIC_PROXY or settings.YTDLP_PROXY,
                 on_progress_fraction=on_progress_fraction,
+                on_postprocess=on_postprocess,
             )
         except RuntimeError as e:
             if "HTTP Error 451" in str(e) or "Unavailable For Legal Reasons" in str(e):
@@ -154,6 +160,7 @@ async def download_audio(
         output_dir,
         proxy=settings.YTDLP_PROXY,
         on_progress_fraction=on_progress_fraction,
+        on_postprocess=on_postprocess,
     )
 
 
@@ -213,21 +220,20 @@ def _parse_ytdlp_meta(stdout: bytes) -> SourceMetadata:
     )
 
 
-async def _download_with_ytdlp(
-    url: str,
-    output_dir: str,
-    proxy: Optional[str] = None,
-    on_progress_fraction: Optional[FractionCallback] = None,
-) -> tuple[str, SourceMetadata]:
-    os.makedirs(output_dir, exist_ok=True)
-    out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
+def _build_ytdlp_cmd(url: str, out_path: str, proxy: Optional[str]) -> list[str]:
+    """Assemble the yt-dlp argument list (kept pure so it can be unit-tested).
 
+    ``-f bestaudio/best`` prefers an audio-only stream; ``--extract-audio
+    --audio-format best`` extracts the track by stream copy (no re-encode), so
+    only audio — never the full video — is uploaded downstream. A second
+    progress-template exposes the postprocess (extraction) stage.
+    """
     cmd = [
         "yt-dlp",
         "--no-playlist",
+        "-f", "bestaudio/best",
         "--extract-audio",
-        "--audio-format", "mp3",
-        "--audio-quality", "0",
+        "--audio-format", "best",
         "--output", out_path,
         "--print", "after_move:%(.{title,uploader,channel})j",
         "--quiet",
@@ -237,10 +243,64 @@ async def _download_with_ytdlp(
         f"download:{PROGRESS_PREFIX} %(progress.downloaded_bytes)s"
         " %(progress.total_bytes)s"
         " %(progress.fragment_index)s %(progress.fragment_count)s",
+        "--progress-template",
+        f"postprocess:{POSTPROCESS_PREFIX} %(progress.status)s",
     ]
     if proxy:
         cmd.extend(["--proxy", proxy])
     cmd.append(url)
+    return cmd
+
+
+async def _dispatch_progress_line(
+    line: str,
+    keep: list[str],
+    state: dict,
+    on_progress_fraction: Optional[FractionCallback],
+    on_postprocess: Optional[PostprocessCallback],
+) -> None:
+    """Route one yt-dlp output line: postprocess signal, progress, or keep.
+
+    ``state`` carries cross-stream, cross-line values: ``last_fraction`` (the
+    reported fraction is kept monotonic — fragmented downloads restart byte
+    counters) and ``postprocess_fired`` (fire ``on_postprocess`` only once).
+    """
+    if line.startswith(POSTPROCESS_PREFIX):
+        if on_postprocess is not None and not state["postprocess_fired"]:
+            state["postprocess_fired"] = True
+            with suppress(Exception):
+                await on_postprocess()
+        return
+    fraction = parse_progress_line(line)
+    if fraction is None:
+        # Non-progress line (yt-dlp error text, or the after_move meta JSON that
+        # prints *after* postprocessing) — always keep it.
+        keep.append(line)
+    elif (
+        not state["postprocess_fired"]
+        and on_progress_fraction is not None
+        and fraction > state["last_fraction"]
+    ):
+        # stdout (download) and stderr (postprocess) are read by independent
+        # coroutines, so a buffered download line can arrive after
+        # postprocessing began. Reporting a fraction then re-determinates the
+        # bar and undoes the animated "extracting audio" phase — so drop it.
+        state["last_fraction"] = fraction
+        with suppress(Exception):
+            await on_progress_fraction(min(fraction, _DOWNLOAD_FRACTION_CEILING))
+
+
+async def _download_with_ytdlp(
+    url: str,
+    output_dir: str,
+    proxy: Optional[str] = None,
+    on_progress_fraction: Optional[FractionCallback] = None,
+    on_postprocess: Optional[PostprocessCallback] = None,
+) -> tuple[str, SourceMetadata]:
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
+
+    cmd = _build_ytdlp_cmd(url, out_path, proxy)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -252,26 +312,19 @@ async def _download_with_ytdlp(
         limit=1024 * 1024,
     )
 
-    # Fragmented downloads restart byte counters and estimates jump around,
-    # so the reported fraction is kept monotonic.
-    last_fraction = 0.0
+    # Shared across both stream readers: monotonic fraction + one-shot
+    # postprocess flag (yt-dlp may write progress to stdout or stderr).
+    state = {"last_fraction": 0.0, "postprocess_fired": False}
 
     async def _read_stream(stream: asyncio.StreamReader, keep: list[str]) -> None:
-        nonlocal last_fraction
         while True:
             raw = await stream.readline()
             if not raw:
                 break
             line = raw.decode(errors="replace").rstrip("\n")
-            fraction = parse_progress_line(line)
-            if fraction is None:
-                keep.append(line)
-            elif on_progress_fraction is not None and fraction > last_fraction:
-                last_fraction = fraction
-                with suppress(Exception):
-                    await on_progress_fraction(
-                        min(fraction, _DOWNLOAD_FRACTION_CEILING)
-                    )
+            await _dispatch_progress_line(
+                line, keep, state, on_progress_fraction, on_postprocess
+            )
 
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []

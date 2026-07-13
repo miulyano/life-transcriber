@@ -160,21 +160,35 @@ async def download_audio(
 def parse_progress_line(line: str) -> Optional[float]:
     """Parse a '--progress-template' line into a 0..1 fraction.
 
-    Expected form: 'LTPROG <downloaded_bytes> <total_bytes> <total_bytes_estimate>'
-    where any field may be 'NA'. Returns None for non-progress lines and when
-    no usable total is available.
+    Expected form: 'LTPROG <downloaded_bytes> <total_bytes> <fragment_index>
+    <fragment_count>' where any field may be 'NA'. Returns None for
+    non-progress lines and whenever no trustworthy number is available — the
+    caller then shows an indeterminate bar rather than a misleading percent.
+
+    Fragmented downloads (YouTube DASH/HLS) restart the byte counters on every
+    fragment and only expose an undersized total_bytes_estimate, so whole-file
+    progress is taken from fragment_index / fragment_count when present. Plain
+    HTTP files fall back to downloaded_bytes / total_bytes, but only when
+    total_bytes is a real value — the estimate is never used as a denominator.
     """
     parts = line.strip().split()
-    if len(parts) != 4 or parts[0] != PROGRESS_PREFIX:
+    if len(parts) != 5 or parts[0] != PROGRESS_PREFIX:
         return None
+    downloaded, total, frag_index, frag_count = parts[1:]
     try:
-        downloaded = float(parts[1])
-        total = float(parts[2]) if parts[2] != "NA" else float(parts[3])
+        if frag_index != "NA" and frag_count != "NA":
+            index = float(frag_index)
+            count = float(frag_count)
+            if count > 0 and index >= 0:
+                return min(index / count, 1.0)
+        if total != "NA":
+            done = float(downloaded)
+            size = float(total)
+            if size > 0 and done >= 0:
+                return min(done / size, 1.0)
     except ValueError:
         return None
-    if total <= 0 or downloaded < 0:
-        return None
-    return min(downloaded / total, 1.0)
+    return None
 
 
 def _parse_ytdlp_meta(stdout: bytes) -> SourceMetadata:
@@ -221,7 +235,8 @@ async def _download_with_ytdlp(
         "--newline",
         "--progress-template",
         f"download:{PROGRESS_PREFIX} %(progress.downloaded_bytes)s"
-        " %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
+        " %(progress.total_bytes)s"
+        " %(progress.fragment_index)s %(progress.fragment_count)s",
     ]
     if proxy:
         cmd.extend(["--proxy", proxy])

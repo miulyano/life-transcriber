@@ -16,3 +16,11 @@ Yandex
 Cobalt
 
 # --- Add your own below ---
+
+# --- Vibe coding (EN + RU spellings) ---
+vibe coding
+vibecoding
+vibe-coding
+вайб-кодинг
+вайбкодинг
+вайб кодинг

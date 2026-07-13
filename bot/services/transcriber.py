@@ -106,9 +106,26 @@ def _build_config() -> aai.TranscriptionConfig:
         cfg.language_code = settings.FORCE_LANGUAGE_CODE
     else:
         cfg.language_detection = True
-    if _WORD_BOOST:
-        cfg.set_word_boost(_WORD_BOOST, boost=aai.WordBoost(settings.WORD_BOOST_LEVEL))
+    _apply_term_boost(cfg)
     return cfg
+
+
+# Universal-3.5 Pro and Slam-1 reject `word_boost` and take `keyterms_prompt`
+# instead; older models (universal/best/nano) still use word_boost.
+_KEYTERMS_MODELS = {"universal-3-5-pro", "slam-1"}
+
+
+def _apply_term_boost(cfg: aai.TranscriptionConfig) -> None:
+    if not _WORD_BOOST:
+        return
+    if settings.ASSEMBLYAI_SPEECH_MODEL in _KEYTERMS_MODELS:
+        cfg.keyterms_prompt = _WORD_BOOST
+        strength = "high" if settings.WORD_BOOST_LEVEL == "high" else "standard"
+        cfg.keyterms_prompt_options = aai.KeytermsPromptOptions(
+            keyterms_match_strength=strength
+        )
+    else:
+        cfg.set_word_boost(_WORD_BOOST, boost=aai.WordBoost(settings.WORD_BOOST_LEVEL))
 
 
 def _utterances_from_response(transcript) -> list[Utterance]:

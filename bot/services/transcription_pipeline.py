@@ -6,7 +6,11 @@ from typing import Awaitable, Callable, Optional, Protocol
 from bot.services.media import probe_duration
 from bot.services.source_meta import SourceMetadata
 from bot.services.transcriber import transcribe
-from bot.services.transcript_store import TranscriptStore, get_transcript_store
+from bot.services.transcript_store import (
+    TranscriptRecord,
+    TranscriptStore,
+    get_transcript_store,
+)
 from bot.services.usage_store import UsageStore, get_store
 
 logger = logging.getLogger(__name__)
@@ -35,8 +39,11 @@ async def run_transcription_pipeline(
     usage_store: Optional[UsageStore] = None,
     source_type: str = "unknown",
     transcript_store: Optional[TranscriptStore] = None,
-) -> None:
+) -> Optional[TranscriptRecord]:
     """Transcribe audio (AssemblyAI) and deliver the formatted result.
+
+    Returns the persisted :class:`TranscriptRecord`, or ``None`` when
+    persistence failed (delivery to the chat still happens).
 
     Перед запуском резервирует оценку длительности (ffprobe) в месячном
     лимите часов для ``user_id`` — кидает
@@ -67,8 +74,9 @@ async def run_transcription_pipeline(
     await store.commit(user_id, estimated_sec, result.audio_duration_sec)
     # Persist before delivering: a Telegram failure must not lose the
     # transcript, and a storage failure must not block delivery.
+    record: Optional[TranscriptRecord] = None
     try:
-        await (transcript_store or get_transcript_store()).save(
+        record = await (transcript_store or get_transcript_store()).save(
             user_id,
             title=result.title,
             source_type=source_type,
@@ -83,3 +91,4 @@ async def run_transcription_pipeline(
         await on_phase_change("Отправляю результат…")
     await reporter.set_phase("Отправляю результат…")
     await deliver_text(result.body, result.body_timecoded or None)
+    return record

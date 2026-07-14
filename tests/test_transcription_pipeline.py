@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -68,6 +69,7 @@ class _SpyTranscriptStore:
                 "channel": channel,
             }
         )
+        return SimpleNamespace(id=f"rec-{len(self.saved)}", user_id=user_id)
 
 
 def _result(body="formatted body", title="T", raw="raw", duration=42.0):
@@ -222,3 +224,37 @@ async def test_pipeline_limit_exceeded_no_save(monkeypatch):
         )
 
     assert transcript_store.saved == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_returns_saved_record(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "transcribe", AsyncMock(return_value=_result()))
+    transcript_store = _SpyTranscriptStore()
+
+    record = await pipeline_module.run_transcription_pipeline(
+        "/tmp/audio.mp3",
+        reporter=_Reporter(),
+        deliver_text=AsyncMock(),
+        user_id=111,
+        usage_store=_NoLimitStore(),
+        transcript_store=transcript_store,
+    )
+
+    assert record is not None
+    assert record.id == "rec-1"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_returns_none_on_store_failure(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "transcribe", AsyncMock(return_value=_result()))
+
+    record = await pipeline_module.run_transcription_pipeline(
+        "/tmp/audio.mp3",
+        reporter=_Reporter(),
+        deliver_text=AsyncMock(),
+        user_id=111,
+        usage_store=_NoLimitStore(),
+        transcript_store=_SpyTranscriptStore(fail=True),
+    )
+
+    assert record is None

@@ -10,7 +10,7 @@
 </p>
 
 Персональный Telegram-бот для транскрибации аудио и видео через AssemblyAI
-Universal-2 (с акустической диаризацией спикеров), с генерацией краткого
+Universal-3.5 Pro (с акустической диаризацией спикеров), с генерацией краткого
 конспекта на GPT-4o.
 
 ## Что умеет
@@ -27,7 +27,7 @@ Universal-2 (с акустической диаризацией спикеров
 - 📝 **Краткий конспект** — inline-кнопка под транскрибацией, генерирует тезисы через GPT-4o; длинные тексты обрабатываются фрагментами и собираются в единый конспект
 - 🧹 **Очистка полной транскрибации** — у транскрибаций, которые приходят `.txt`-файлом, есть кнопка «Очистить текст»: бот убирает слова-паразиты, повторы, паузы и грязные формулировки, сохраняя исходную структуру и смысл
 - ⏳ **Интерактивный статус** — во время обработки присылается одно сообщение с анимированным прогресс-баром и фазами («Скачиваю…» → «Транскрибирую…» → «Отправляю результат…»); на скачивании (yt-dlp) и транскрибации рядом с баром показываются проценты `NN%`, при форматировании длинного текста — счётчик частей `N/M`; тот же бар показывается для «Делаю краткий конспект…» и «Очищаю текст…» с прогрессом по чанкам N/M; сообщение удаляется, когда результат отправлен, или превращается в текст ошибки, если что-то сломалось
-- 🔤 **Word boost для специфичных терминов** — список доменных слов (имена, бренды, технические термины) поднимает точность распознавания. Поддерживается до ~1000 слов на запрос; редактируется в `bot/data/word_boost.txt` без пересборки образа (директория монтируется как volume).
+- 🔤 **Word boost для специфичных терминов** — список доменных слов (имена, бренды, технические термины) поднимает точность распознавания. Для Universal-3.5 Pro и Slam-1 термины подаются как `keyterms_prompt`, для старых моделей (`universal`/`nano`) — как `word_boost`; список и уровень (`WORD_BOOST_LEVEL`) в обоих случаях одни и те же. Редактируется в `bot/data/word_boost.txt` без пересборки образа (директория монтируется как volume).
 - 🕒 **Выбор формата до генерации** — получив ссылку или медиа, бот спрашивает «С таймкодами / Без таймкодов»; транскрибация стартует после нажатия, кнопка «✖️ Отменить транскрибацию» удаляет запрос без запуска. В форме Mini App — переключатель «Таймкоды в файле»
 - 🔀 **Параллельные транскрибации** — несколько запросов (например, ссылки, присланные подряд отдельными сообщениями) обрабатываются одновременно, у каждого своё статус-сообщение. Одновременно работает до `MAX_CONCURRENT_TRANSCRIPTIONS` задач (default 3), остальные ждут со статусом «В очереди…». Запущенную транскрибацию можно снять кнопкой «✖️ Отменить» на её статус-сообщении — временные файлы и процессы скачивания подчищаются
 - 💾 **Хранение генераций** — каждая готовая транскрибация сохраняется на сервере (SQLite + `.txt` без таймкодов + JSON с таймингами предложений); версия с таймкодами рендерится по запросу
@@ -67,7 +67,7 @@ Universal-2 (с акустической диаризацией спикеров
 
 - Python 3.11+
 - [aiogram 3.x](https://github.com/aiogram/aiogram) — async Telegram Bot framework
-- [AssemblyAI](https://www.assemblyai.com/) — транскрибация (Universal-2: ~<5% WER, 99 языков) + акустическая диаризация спикеров (95 языков включая русский)
+- [AssemblyAI](https://www.assemblyai.com/) — транскрибация (Universal-3.5 Pro: индустриально-лучшая точность на реальном аудио, 99 языков) + акустическая диаризация спикеров (95 языков включая русский)
 - [OpenAI API](https://platform.openai.com/docs/api-reference) — GPT-4o для заголовков и конспектов
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание с видео-платформ
 - [Cobalt](https://github.com/imputnet/cobalt) — скачивание видео из Instagram (self-hosted Docker-sidecar)
@@ -127,7 +127,7 @@ ALLOWED_USER_IDS=123456789,987654321
 Опциональные переменные (дефолты в `.env.example`):
 - `LONG_TEXT_THRESHOLD=2000` — порог длины текста, после которого ответ идёт файлом
 - `MIN_SUMMARY_LEN=500` — минимальная длина текста (символов), при которой появляется кнопка «📝 Краткий конспект»
-- `ASSEMBLYAI_SPEECH_MODEL=universal` — модель AssemblyAI (`universal` | `nano` | `slam-1`)
+- `ASSEMBLYAI_SPEECH_MODEL=universal-3-5-pro` — модель AssemblyAI (`universal-3-5-pro` | `universal` | `nano` | `slam-1`)
 - `FORCE_LANGUAGE_CODE=` — если задан (например `ru`), отключает автодетект языка; полезно для коротких клипов < 30 сек, где автодетект нестабилен
 - `WORD_BOOST_FILE=bot/data/word_boost.txt` — путь к файлу с доменными терминами (по одному на строку, комментарии через `#`); директория монтируется volume, можно пополнять без пересборки образа
 - `WORD_BOOST_LEVEL=high` — сила буста терминов (`low` | `default` | `high`)
@@ -140,7 +140,11 @@ ALLOWED_USER_IDS=123456789,987654321
 - `YTDLP_PROXY=` — опциональный proxy для всех скачиваний через `yt-dlp`
 - `YANDEX_MUSIC_PROXY=` — proxy только для Яндекс Музыки; нужен, если VPS получает HTTP 451 из-за региона
 - `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «Транскрибации» (требует shared Caddy на VPS, см. ниже)
+- `MAX_UPLOAD_MB=4096` — потолок размера одного файла (Mini App upload + MCP `/api/files`); упирается в свободный диск, а не в Bot API
+- `MAX_PENDING_UPLOAD_MB=8192` — суммарный объём незабранных MCP-загрузок на пользователя
 - `API_TOKENS=` — bearer-токены для REST API в формате `token1:user_id1,token2:user_id2`; токен даёт доступ только к генерациям замапленного пользователя
+- `LIMITS_FILE=bot/data/user_limits.json` — per-user месячные лимиты часов транскрибации
+- `USAGE_FILE=data/usage.json` — накопленный расход часов по календарным месяцам (writable volume)
 - `TRANSCRIPTS_DB_FILE=data/transcripts.db` — SQLite с метаданными сохранённых транскрибаций
 - `TRANSCRIPTS_DIR=data/transcripts` — директория с `.txt`/`.json` файлами генераций
 
@@ -461,20 +465,22 @@ life-transcriber/
 ├── bot/
 │   ├── main.py                  # Точка входа; ставит menu button если WEBAPP_URL задан
 │   ├── config.py                # Pydantic Settings (читает .env)
+│   ├── constants.py             # Константы (TELEGRAM_TEXT_LIMIT — потолок длины сообщения TG)
 │   ├── handlers/
 │   │   ├── voice.py             # voice + video_note (кружочки) → вопрос «с таймкодами/без»
 │   │   ├── video.py             # видео-файлы и document/video → вопрос «с таймкодами/без»
 │   │   ├── links.py             # URL → вопрос → yt-dlp → transcribe (process_link)
 │   │   ├── _tg_media.py         # скачивание Telegram-файла + запуск пайплайна (process_tg_media)
 │   │   ├── _timecode_prompt.py  # ask_timecodes: регистрирует pending job + клавиатура вопроса
-│   │   ├── commands.py          # /start, /limit
+│   │   ├── commands.py          # /start, /help, /limit
 │   │   ├── mcp_auth.py          # pairing MCP: deep link, pairing-код, кнопки ✅/❌, /mcp
 │   │   └── callbacks.py         # кнопки «Краткий конспект», «Скопировать», выбор tc:
 │   ├── services/
-│   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript (title + uploader)
+│   │   ├── transcriber.py       # AssemblyAI Universal-3.5 Pro: транскрибация + диаризация → FormattedTranscript (title + uploader)
 │   │   ├── source_meta.py       # SourceMetadata: title/uploader источника + title_is_filename (имя файла — hint для GPT, не заголовок)
 │   │   ├── formatter.py         # render_with_speakers (A/B → Спикер 1/2) + analyze_transcript: title/speakers через GPT-4o (GPT-title используется, если source_meta.title — хэш или имя файла)
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект, chunking длинных текстов
+│   │   ├── prompts.py           # System-промпты для GPT-4o (summarizer + formatter)
 │   │   ├── instagram.py         # Instagram Reels через Cobalt API
 │   │   ├── facebook.py          # Facebook Videos/Reels через Cobalt API
 │   │   ├── cobalt_client.py     # Общий клиент для Cobalt API (Instagram/Facebook)
@@ -494,9 +500,10 @@ life-transcriber/
 │   │   ├── usage_store.py       # Per-user месячные лимиты часов + расход (JSON-стор)
 │   │   ├── temp_cleanup.py      # Периодическая очистка старых файлов из TEMP_DIR
 │   │   ├── user_facing_error.py # Типизированные provider-ошибки без потери старого текста
+│   │   ├── error_messages.py    # Fallback-тексты provider-ошибок (маппинг источник → сообщение)
 │   │   └── downloader.py        # Диспетчер: Яндекс Диск / Instagram / Facebook / Яндекс Музыка / yt-dlp + FFmpeg
 │   ├── data/
-│   │   ├── word_boost.txt       # доменные термины для AssemblyAI word_boost (по одному на строку)
+│   │   ├── word_boost.txt       # доменные термины для AssemblyAI (keyterms_prompt / word_boost, по одному на строку)
 │   │   ├── custom_spelling.json # JSON-карта для пост-замен в тексте
 │   │   ├── user_limits.example.json # Пример формата лимитов часов
 │   │   └── user_limits.json     # (gitignored) per-user лимиты часов в месяц
@@ -504,6 +511,9 @@ life-transcriber/
 │   └── utils/
 │       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин
 │       ├── text_chunking.py     # split_long_text: общий чанкер для summarizer/formatter
+│       ├── markdown.py          # markdown_to_telegram_html: Markdown из GPT-конспектов → Telegram-HTML
+│       ├── filename.py          # безопасные читаемые имена .txt из заголовка материала
+│       ├── source_labels.py     # человекочитаемые метки типов источника (бот + Mini App)
 │       ├── fake_progress.py     # ровный прогресс-бар для операций без реального сигнала
 │       ├── pluralize.py         # plural_ru, format_hm для русских числительных
 │       └── progress.py          # ProgressReporter: один статус с анимированным баром

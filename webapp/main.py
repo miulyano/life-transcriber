@@ -243,6 +243,19 @@ async def upload(
 MAX_AGENT_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB на один файл
 MAX_AGENT_PENDING_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB незабранных на юзера
 
+# Сериализует загрузки одного пользователя, чтобы per-user quota не
+# обходилась конкурентными запросами (все увидели бы объём до записи).
+# Single-process uvicorn — in-process Lock достаточно.
+_upload_locks: dict[int, asyncio.Lock] = {}
+
+
+def _upload_lock(user_id: int) -> asyncio.Lock:
+    lock = _upload_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _upload_locks[user_id] = lock
+    return lock
+
 
 def _pending_upload_bytes(user_id: int) -> int:
     """Суммарный размер незабранных загрузок этого пользователя."""
@@ -265,31 +278,35 @@ async def upload_file_for_agent(
     The user_id embedded in the filename is the ownership check: submit_file
     globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
     swept by the periodic temp cleanup (6h TTL). A per-file size cap and a
-    per-user pending-storage quota bound disk use on the shared temp volume.
+    per-user pending-storage quota bound disk use on the shared temp volume;
+    a per-user lock makes the quota hold under concurrent uploads.
     """
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
-    if _pending_upload_bytes(user_id) >= MAX_AGENT_PENDING_BYTES:
-        raise HTTPException(
-            413, "Too many pending uploads — submit or wait for them to expire"
-        )
-
     file_id = uuid.uuid4().hex
     safe_name = os.path.basename(file.filename or "upload").replace("/", "_") or "upload"
     dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{safe_name}")
 
-    bytes_written = 0
-    try:
-        async with aiofiles.open(dest, "wb") as f:
-            while chunk := await file.read(1 << 20):
-                bytes_written += len(chunk)
-                if bytes_written > MAX_AGENT_UPLOAD_BYTES:
-                    raise HTTPException(413, "File too large")
-                await f.write(chunk)
-    except BaseException:
-        # Do not leave a partial/oversized upload on the shared volume.
-        if os.path.exists(dest):
-            os.unlink(dest)
-        raise
+    async with _upload_lock(user_id):
+        existing = _pending_upload_bytes(user_id)
+        if existing >= MAX_AGENT_PENDING_BYTES:
+            raise HTTPException(
+                413, "Too many pending uploads — submit or wait for them to expire"
+            )
+        bytes_written = 0
+        try:
+            async with aiofiles.open(dest, "wb") as f:
+                while chunk := await file.read(1 << 20):
+                    bytes_written += len(chunk)
+                    if bytes_written > MAX_AGENT_UPLOAD_BYTES:
+                        raise HTTPException(413, "File too large")
+                    if existing + bytes_written > MAX_AGENT_PENDING_BYTES:
+                        raise HTTPException(413, "Pending upload quota exceeded")
+                    await f.write(chunk)
+        except BaseException:
+            # Do not leave a partial/oversized upload on the shared volume.
+            if os.path.exists(dest):
+                os.unlink(dest)
+            raise
 
     logger.info(
         "Saved agent file %s (user %s, bytes=%s)", dest, user_id, bytes_written

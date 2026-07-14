@@ -84,6 +84,45 @@ def test_upload_rejects_over_quota(client, bearer, temp_dir, monkeypatch):
     assert res.status_code == 413
 
 
+async def test_upload_quota_holds_under_concurrency(temp_dir, monkeypatch):
+    """Per-user lock: параллельные загрузки не обходят quota (TOCTOU)."""
+    import webapp.main as main_module
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(main_module, "MAX_AGENT_PENDING_BYTES", 15)
+    main_module._upload_locks.clear()
+
+    class _FakeUpload:
+        def __init__(self, data: bytes):
+            self.filename = "a.mp3"
+            self._data = data
+            self._read = False
+
+        async def read(self, size: int) -> bytes:
+            if self._read:
+                return b""
+            self._read = True
+            return self._data
+
+    async def _one():
+        try:
+            await main_module.upload_file_for_agent(_FakeUpload(b"x" * 10), user_id=111)
+            return "ok"
+        except HTTPException as e:
+            return e.status_code
+
+    results = await asyncio.gather(_one(), _one())
+
+    # один принят (10 байт), второй отклонён (10+10 > 15)
+    assert sorted(str(r) for r in results) == ["413", "ok"]
+    total = sum(
+        os.path.getsize(temp_dir / p)
+        for p in os.listdir(temp_dir)
+        if p.startswith("mcpfile_")
+    )
+    assert total <= 15
+
+
 # ---------------------------------------------------------------- submit_file
 
 

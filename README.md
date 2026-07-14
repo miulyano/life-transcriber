@@ -356,7 +356,8 @@ curl -H "Authorization: Bearer <your-api-key>" \
 > **Лимит размера загрузок:** webapp ограничивает файл 2 ГБ и суммарный объём
 > незабранных загрузок на пользователя, но основной ingress-лимит задаётся в
 > Caddy. Для домена в `/opt/caddy/Caddyfile` рекомендуется
-> `request_body { max_size 2GB }` — тогда крупные тела отклоняются reverse-proxy
+> `request_body { max_size 2200MB }` (2 GiB файла + multipart-overhead) — тогда
+> крупные тела отклоняются reverse-proxy
 > до попадания в webapp (защита от исчерпания временного диска).
 
 ## VPS: shared Caddy (reverse proxy для всех проектов)
@@ -404,7 +405,7 @@ volumes:
 
 transcriber.yourdomain.com {
     encode gzip
-    request_body { max_size 10GB }
+    request_body { max_size 2200MB }
     reverse_proxy webapp:8000
 }
 ```
@@ -421,7 +422,7 @@ Firewall: `ufw allow 80 && ufw allow 443`.
 ```
 transcriber.yourdomain.com {
     encode gzip
-    request_body { max_size 10GB }
+    request_body { max_size 2200MB }
     reverse_proxy webapp:8000
 }
 ```

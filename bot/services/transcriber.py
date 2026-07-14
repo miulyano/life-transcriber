@@ -1,4 +1,4 @@
-"""Audio → transcript via AssemblyAI Universal model.
+"""Audio → transcript via AssemblyAI (model configurable, default Universal-3.5 Pro).
 
 Returns a :class:`FormattedTranscript` with:
 - ``body`` — final text ready to deliver (title + speaker-labelled paragraphs);

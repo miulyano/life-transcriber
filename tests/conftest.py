@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 import pytest
 
@@ -9,6 +10,18 @@ os.environ["BOT_TOKEN"] = "test_token"
 os.environ["OPENAI_API_KEY"] = "test_key"
 os.environ["ASSEMBLYAI_API_KEY"] = "test_aai_key"
 os.environ["ALLOWED_USER_IDS"] = "111,222"
+
+# Point all persistent stores at a throwaway dir: the webapp lifespan touches
+# the DB on startup, so TestClient(app) context managers would otherwise write
+# into the repo-local data/ directory. Mutating the singleton (not env vars)
+# keeps Settings() defaults intact for test_config.py.
+_test_data_dir = tempfile.mkdtemp(prefix="transcriber_test_data_")
+
+from bot.config import settings  # noqa: E402
+
+settings.TRANSCRIPTS_DB_FILE = os.path.join(_test_data_dir, "transcripts.db")
+settings.TRANSCRIPTS_DIR = os.path.join(_test_data_dir, "transcripts")
+settings.USAGE_FILE = os.path.join(_test_data_dir, "usage.json")
 
 
 @pytest.fixture(autouse=True)

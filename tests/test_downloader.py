@@ -249,6 +249,38 @@ async def test_download_audio_passes_callbacks_to_ytdlp(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_download_audio_logs_swallowed_yandex_music_error(monkeypatch, caplog):
+    """When the custom Yandex Music extractor fails and the code falls back to
+    yt-dlp, the extractor's real error must be logged — not swallowed silently —
+    so a dead API endpoint (HTTP 404) stays diagnosable."""
+    import logging
+
+    from bot.services.user_facing_error import UserFacingError
+
+    async def _boom_custom(url, output_dir):
+        raise UserFacingError("yandex-music", "API подкаста вернул HTTP 404")
+
+    async def _fake_ytdlp(url, output_dir, **_kwargs):
+        return "/tmp/x.mp3", _parse_ytdlp_meta(b"")
+
+    monkeypatch.setattr(
+        downloader_module,
+        "download_podcast_episode_from_yandex_music",
+        _boom_custom,
+    )
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _fake_ytdlp)
+
+    url = "https://music.yandex.ru/album/31008129/track/128441116"
+    with caplog.at_level(logging.WARNING, logger="bot.services.downloader"):
+        path, _meta = await download_audio(url, "/tmp")
+
+    # Fallback still runs…
+    assert path == "/tmp/x.mp3"
+    # …but the swallowed extractor error is now visible in the logs.
+    assert any("HTTP 404" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_download_with_ytdlp_kills_process_on_reader_error(monkeypatch, tmp_path):
     """A readline failure (e.g. line over the StreamReader limit) must not leak
     the yt-dlp child — proc.kill() is called before the error propagates."""

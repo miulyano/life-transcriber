@@ -25,3 +25,21 @@ def format_download_error(error: "Exception | str") -> str:
         return "Не удалось скачать видео с этой платформы. Попробуй другую ссылку."
 
     return f"Ошибка: {error_msg}"
+
+
+def format_exception_chain(exc: BaseException) -> str:
+    """Render an exception and its ``raise ... from`` cause chain as one line
+    for diagnostic logs: ``A: b | причина: C: d``.
+
+    The friendly message shown to the user hides the real cause (e.g. a yt-dlp
+    ``TypeError`` wrapped in a provider ``UserFacingError``); this keeps the whole
+    chain visible in the logs without dumping a full traceback.
+    """
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        parts.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    return " | причина: ".join(parts)

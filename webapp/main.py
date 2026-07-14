@@ -73,6 +73,31 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
 
+# Upload endpoints stream to the shared temp volume; anything larger than the
+# per-file cap plus a little multipart overhead is rejected before the body is
+# parsed (Starlette spools file parts to disk otherwise). This is defence in
+# depth — the primary ingress limit belongs in Caddy (request_body max_size).
+_MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024 * 1024 + 16 * 1024 * 1024  # 2 GB + 16 MB
+_UPLOAD_PATHS = ("/api/files", "/api/upload")
+
+
+@app.middleware("http")
+async def limit_upload_body(request, call_next):
+    if request.url.path in _UPLOAD_PATHS:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
+            if declared > _MAX_REQUEST_BODY_BYTES:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse({"detail": "Request too large"}, status_code=413)
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def no_cache_static(request, call_next):

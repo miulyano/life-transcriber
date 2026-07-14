@@ -75,6 +75,17 @@ def test_upload_rejects_oversized(client, bearer, temp_dir, monkeypatch):
     assert [p for p in os.listdir(temp_dir) if p.startswith("mcpfile_")] == []
 
 
+def test_upload_rejects_by_content_length(client, bearer, temp_dir, monkeypatch):
+    """Ранний guard: большой Content-Length отклоняется до парсинга body."""
+    import webapp.main as main_module
+
+    monkeypatch.setattr(main_module, "_MAX_REQUEST_BODY_BYTES", 20)
+    res = client.post("/api/files", headers=bearer, files={"file": ("big.mp3", b"x" * 100)})
+    assert res.status_code == 413
+    # body не спулился в наш temp
+    assert [p for p in os.listdir(temp_dir) if p.startswith("mcpfile_")] == []
+
+
 def test_upload_rejects_over_quota(client, bearer, temp_dir, monkeypatch):
     import webapp.main as main_module
 

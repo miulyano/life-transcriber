@@ -1,3 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
 python-multipart>=0.0.9
+# MCP server (streamable-http). Upper bound: the /mcp mount relies on SDK
+# internals (session_manager, RequestContext.request) that shift between majors.
+mcp>=1.12,<2

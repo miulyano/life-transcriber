@@ -9,20 +9,15 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from aiogram import Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from bot.config import settings
-from bot.services.formatter import render_timecode_segments
 from bot.services.transcript_store import get_transcript_store
-from bot.utils.filename import build_filename, split_header_and_body
+from bot.utils.filename import build_filename
 from bot.utils.source_labels import source_label
-from bot.utils.progress import ProgressReporter
-from webapp.delivery import send_transcript_to_chat
+from webapp.delivery import build_resend_payload, deliver_transcript_with_status
 from webapp.deps import resolve_user_id
 
 logger = logging.getLogger(__name__)
@@ -81,36 +76,6 @@ async def delete_transcript(
     return {"ok": True}
 
 
-async def _deliver_resend(
-    user_id: int, text: str, file_text: str | None, source_type: str | None
-) -> None:
-    """Send a stored transcript to chat. Runs as a background task.
-
-    Same status model as _process_upload: a ProgressReporter status message
-    in chat shows the phase; on failure it turns into an in-chat error.
-    """
-    bot = Bot(
-        token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
-    try:
-        async with ProgressReporter.for_chat(
-            bot, user_id, "Отправляю результат…"
-        ) as reporter:
-            try:
-                await send_transcript_to_chat(
-                    bot, user_id, text, file_text, source_type=source_type
-                )
-                await reporter.finish()
-            except Exception:
-                logger.exception("Resend to chat failed for user %s", user_id)
-                await reporter.fail(
-                    "Не удалось отправить транскрибацию. Попробуй ещё раз."
-                )
-    finally:
-        await bot.session.close()
-
-
 @router.post("/{record_id}/resend")
 async def resend_transcript(
     record_id: str,
@@ -123,21 +88,13 @@ async def resend_transcript(
     if record is None:
         raise HTTPException(404, "Not found")
 
-    text = await store.read_text(record)
-    file_text: str | None = None
-    # Timecodes are only deliverable on the file path (len > threshold);
-    # for short transcripts the flag is silently ignored, mirroring
-    # prepare_transcript's send_as_file logic.
-    if body and body.timecoded and len(text) > settings.LONG_TEXT_THRESHOLD:
-        segments = await store.read_segments(record)
-        if segments:
-            rendered = render_timecode_segments(segments)
-            header, _ = split_header_and_body(text)
-            file_text = f"{header}\n\n{rendered}".strip() if header else rendered
+    text, file_text = await build_resend_payload(
+        record, store, timecoded=bool(body and body.timecoded)
+    )
 
     # Respond immediately; delivery happens in the background with an
     # in-chat status message (same model as the upload flow).
     background_tasks.add_task(
-        _deliver_resend, user_id, text, file_text, record.source_type
+        deliver_transcript_with_status, user_id, text, file_text, record.source_type
     )
     return {"ok": True}

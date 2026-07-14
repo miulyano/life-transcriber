@@ -15,15 +15,19 @@ from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
 from bot.config import settings
+from bot.services.job_store import get_job_store
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.source_meta import SourceMetadata
 from bot.services.task_registry import get_semaphore
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
+from bot.services.token_store import get_token_store
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
+from webapp.mcp_auth import MCPBearerAuth
+from webapp.mcp_server import mcp
 from webapp.transcripts_api import router as transcripts_router
 
 logger = logging.getLogger(__name__)
@@ -40,8 +44,23 @@ async def lifespan(_app: FastAPI):
     cleanup_task = asyncio.create_task(
         run_periodic_temp_cleanup(settings.TEMP_DIR, logger=logger)
     )
+    # Only this process executes MCP jobs, so anything queued/running at
+    # startup is guaranteed dead after a restart.
+    stale = await get_job_store().mark_stale_interrupted()
+    if stale:
+        logger.warning("Marked %d stale MCP jobs as interrupted", stale)
+    removed_jobs = await get_job_store().cleanup_old(days=30)
+    removed_requests = await get_token_store().cleanup_old(days=30)
+    if removed_jobs or removed_requests:
+        logger.info(
+            "Housekeeping: removed %d old jobs, %d old auth requests",
+            removed_jobs,
+            removed_requests,
+        )
     try:
-        yield
+        # Streamable HTTP requires a running session manager for /mcp.
+        async with mcp.session_manager.run():
+            yield
     finally:
         cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -218,6 +237,10 @@ async def upload(
 
 
 app.include_router(transcripts_router)
+
+# MCP endpoint (streamable-http, stateless). Mounted before the static
+# catchall; bearer identity is injected per-request by MCPBearerAuth.
+app.mount("/mcp", MCPBearerAuth(mcp.streamable_http_app()))
 
 # Static files mount last (catchall -- must be after API routes)
 app.mount(

@@ -46,6 +46,8 @@ def test_defaults():
     assert s.TRANSCRIPTS_DB_FILE == "data/transcripts.db"
     assert s.TRANSCRIPTS_DIR == "data/transcripts"
     assert s.API_TOKENS == ""
+    assert s.MAX_UPLOAD_MB == 4096
+    assert s.MAX_PENDING_UPLOAD_MB == 8192
 
 
 def test_api_tokens_empty_by_default():

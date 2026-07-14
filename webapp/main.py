@@ -76,8 +76,10 @@ app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
 # Upload endpoints stream to the shared temp volume; anything larger than the
 # per-file cap plus a little multipart overhead is rejected before the body is
 # parsed (Starlette spools file parts to disk otherwise). This is defence in
-# depth — the primary ingress limit belongs in Caddy (request_body max_size).
-_MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024 * 1024 + 16 * 1024 * 1024  # 2 GB + 16 MB
+# depth — the primary ingress limit belongs in Caddy (request_body max_size,
+# which should be >= MAX_UPLOAD_MB).
+_MULTIPART_OVERHEAD = 16 * 1024 * 1024  # 16 MB for multipart headers/boundaries
+_MAX_REQUEST_BODY_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024 + _MULTIPART_OVERHEAD
 _UPLOAD_PATHS = ("/api/files", "/api/upload")
 
 
@@ -265,8 +267,8 @@ async def upload(
     return {"ok": True}
 
 
-MAX_AGENT_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB на один файл
-MAX_AGENT_PENDING_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB незабранных на юзера
+MAX_AGENT_UPLOAD_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024  # один файл
+MAX_AGENT_PENDING_BYTES = settings.MAX_PENDING_UPLOAD_MB * 1024 * 1024  # на юзера
 
 # Сериализует загрузки одного пользователя, чтобы per-user quota не
 # обходилась конкурентными запросами (все увидели бы объём до записи).

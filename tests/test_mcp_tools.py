@@ -285,6 +285,32 @@ async def test_cancel_job_running(job_store, as_user, monkeypatch):
     assert result["cancelled"] is True
 
 
+async def test_cancel_job_finalizes_status(job_store, as_user, monkeypatch):
+    """H1: cancel_job сам финализирует job — задача, отменённая до первого
+    шага, не остаётся queued до рестарта."""
+    job = await job_store.create(111, kind="url", source="u")
+    await job_store.set_task_id(job.id, "t-1")  # queued + task_id
+    monkeypatch.setattr(server_module, "cancel_task", MagicMock(return_value=True))
+
+    result = await cancel_job(job.id)
+
+    assert result["cancelled"] is True
+    assert (await job_store.get(job.id, 111)).status == "cancelled"
+
+
+async def test_cancel_job_does_not_override_completed(job_store, as_user, monkeypatch):
+    """Гонка: раннер успел завершиться done — cancel не перезатирает."""
+    job = await job_store.create(111, kind="url", source="u")
+    await job_store.set_task_id(job.id, "t-1")
+    await job_store.finalize(job.id, status="done", transcript_id="x")
+    monkeypatch.setattr(server_module, "cancel_task", MagicMock(return_value=True))
+
+    result = await cancel_job(job.id)
+
+    assert result["cancelled"] is False
+    assert (await job_store.get(job.id, 111)).status == "done"
+
+
 async def test_submit_url_persists_task_id_before_returning(job_store, as_user, monkeypatch):
     """Fix #3: cancel_job на свежесозданной джобе видит task_id (нет окна)."""
     monkeypatch.setattr(

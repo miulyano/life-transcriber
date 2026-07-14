@@ -184,16 +184,19 @@ async def _spawn_job(
     never got a job_id for.
     """
     store = get_job_store()
-    job = await store.create(user_id, kind=kind, source=source)
-    task_id = new_task_id()
+    job = None
     try:
+        job = await store.create(user_id, kind=kind, source=source)
+        task_id = new_task_id()
         await store.set_task_id(job.id, task_id)
+        # Spawn last: once the task exists, only the runner owns cleanup.
+        spawn_transcription(user_id, lambda _tid: runner(job.id), task_id=task_id)
     except Exception:
-        await store.finalize(job.id, status="error", error="failed to register job")
+        if job is not None:
+            await store.finalize(job.id, status="error", error="failed to start job")
         if on_start_failure is not None:
             await on_start_failure()
         raise ToolError("failed to start job, please retry")
-    spawn_transcription(user_id, lambda _tid: runner(job.id), task_id=task_id)
     return {"job_id": job.id}
 
 
@@ -315,15 +318,21 @@ async def submit_file(file_id: str, timecodes: bool = True) -> dict:
     except OSError:
         raise ToolError("file not found")
 
-    try:
-        await get_store().assert_within_limit(user_id)
-    except LimitExceededError as exc:
-        os.unlink(claimed_path)
-        raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
-
     async def _cleanup_claim() -> None:
         if os.path.exists(claimed_path):
             os.unlink(claimed_path)
+
+    # Every failure between claim and a successful spawn must return the
+    # upload — a leaked mcpclaim_ file no longer matches the mcpfile_ glob,
+    # so the agent could never retry with the same file_id.
+    try:
+        await get_store().assert_within_limit(user_id)
+    except LimitExceededError as exc:
+        await _cleanup_claim()
+        raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
+    except Exception:
+        await _cleanup_claim()
+        raise
 
     return await _spawn_job(
         user_id,
@@ -389,12 +398,19 @@ async def cancel_job(job_id: str) -> dict:
     """Cancel a queued/running job. The Telegram status message shows
     «Отменено»; a job in a terminal state returns cancelled=false."""
     user_id = _require_user_id()
-    job = await get_job_store().get(job_id, user_id)
+    store = get_job_store()
+    job = await store.get(job_id, user_id)
     if job is None:
         raise ToolError(NOT_FOUND_JOB)
     if job.status not in ("queued", "running"):
         return {"cancelled": False, "status": job.status}
     cancelled = bool(job.task_id) and cancel_task(job.task_id, user_id)
+    if cancelled:
+        # Finalize here rather than relying on the runner: a task cancelled
+        # before its first event-loop turn never enters the runner's
+        # try/except, so nobody would move the job out of queued/running.
+        # Conditional finalize is a no-op if the runner already finished.
+        await store.finalize(job.id, status="cancelled")
     return {"cancelled": cancelled, "status": job.status}
 
 

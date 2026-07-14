@@ -141,3 +141,45 @@ async def test_submit_file_claims_atomically(temp_dir, as_user, job_store, monke
     assert not (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
     with pytest.raises(ToolError, match="file not found"):
         await submit_file("abc123")
+
+
+async def test_submit_file_returns_claim_on_limit(temp_dir, as_user, job_store, monkeypatch):
+    """M2: сбой лимита возвращает загрузку (mcpfile) для ретрая, не теряет её."""
+    from bot.services.usage_store import LimitExceededError
+
+    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(
+            assert_within_limit=AsyncMock(side_effect=LimitExceededError(5))
+        ),
+    )
+
+    with pytest.raises(ToolError, match="limit"):
+        await submit_file("abc123")
+
+    # claimed-файл подчищен, осиротевших mcpclaim_ нет
+    leftovers = [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")]
+    assert leftovers == []
+
+
+async def test_submit_file_returns_claim_on_spawn_failure(temp_dir, as_user, job_store, monkeypatch):
+    """M2: сбой регистрации задачи возвращает загрузку, не оставляет сироту."""
+    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
+    )
+
+    def boom(user_id, coro_factory, *, task_id=None):
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(server_module, "spawn_transcription", boom)
+
+    with pytest.raises(ToolError, match="failed to start"):
+        await submit_file("abc123")
+
+    leftovers = [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")]
+    assert leftovers == []

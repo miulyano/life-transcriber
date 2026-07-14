@@ -130,13 +130,12 @@ async def test_run_url_job_success(job_store, fake_tg, monkeypatch):
     monkeypatch.setattr(runner_module.os.path, "exists", lambda p: False)
 
     await runner_module.run_url_job(
-        job.id, 111, "https://x/v", timecodes=True, task_id="tid-1", job_store=job_store
+        job.id, 111, "https://x/v", timecodes=True, job_store=job_store
     )
 
     got = await job_store.get(job.id, 111)
     assert got.status == "done"
     assert got.transcript_id == "rec-42"
-    assert got.task_id == "tid-1"
     assert ("finish",) in fake_tg.reporter.events
 
 
@@ -189,6 +188,25 @@ async def test_run_url_job_cancelled(job_store, fake_tg, monkeypatch):
     got = await job_store.get(job.id, 111)
     assert got.status == "cancelled"
     assert fake_tg.bot.session.close.await_count == 1
+
+
+async def test_run_url_job_cancelled_at_start(job_store, fake_tg, monkeypatch):
+    """M2: отмена в самом начале раннера (до первого await внутри тела)
+    финализируется как cancelled, а не оставляет job queued."""
+    job = await job_store.create(user_id=111, kind="url", source="u")
+
+    # первый же await в теле раннера (make_bot/for_chat не async here) — фаза
+    monkeypatch.setattr(
+        runner_module,
+        "get_semaphore",
+        lambda: (_ for _ in ()).throw(asyncio.CancelledError()),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner_module.run_url_job(job.id, 111, "https://x/v", job_store=job_store)
+
+    got = await job_store.get(job.id, 111)
+    assert got.status == "cancelled"
 
 
 # ---------------------------------------------------------- run_summary_job

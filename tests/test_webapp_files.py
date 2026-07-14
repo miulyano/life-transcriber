@@ -98,7 +98,7 @@ async def test_submit_file_spawns_job(temp_dir, as_user, job_store, monkeypatch)
     (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
     spawned = []
 
-    def fake_spawn(user_id, coro_factory):
+    def fake_spawn(user_id, coro_factory, *, task_id=None):
         coro_factory("t").close()
         spawned.append(user_id)
         return "t"
@@ -128,7 +128,7 @@ async def test_submit_file_id_traversal_rejected(temp_dir, as_user, job_store):
 async def test_submit_file_claims_atomically(temp_dir, as_user, job_store, monkeypatch):
     """Fix #2: второй параллельный submit того же file_id проигрывает claim."""
     (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
-    monkeypatch.setattr(server_module, "spawn_transcription", lambda u, f: (f("t").close(), "t")[1])
+    monkeypatch.setattr(server_module, "spawn_transcription", lambda u, f, *, task_id=None: (f("t").close(), "t")[1])
     monkeypatch.setattr(
         server_module,
         "get_store",

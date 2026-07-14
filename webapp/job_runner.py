@@ -110,16 +110,15 @@ async def run_url_job(
     url: str,
     *,
     timecodes: bool = True,
-    task_id: Optional[str] = None,
     job_store: Optional[JobStore] = None,
 ) -> None:
-    """Зеркало process_link (bot/handlers/links.py), chat-независимое."""
-    store = job_store or get_job_store()
-    # task_id — первым действием, до семафора: окно «cancel_job до task_id»
-    # должно быть минимальным.
-    if task_id:
-        await store.set_task_id(job_id, task_id)
+    """Зеркало process_link (bot/handlers/links.py), chat-независимое.
 
+    task_id уже персистнут вызывающим (_spawn_job) до запуска задачи, так
+    что раннер сразу входит в try: отмена во время старта гарантированно
+    финализируется как cancelled.
+    """
+    store = job_store or get_job_store()
     bot = _make_bot()
     audio_path: Optional[str] = None
     source_type = detect_link_source_type(url)
@@ -198,14 +197,10 @@ async def run_file_job(
     *,
     filename_hint: Optional[str] = None,
     timecodes: bool = True,
-    task_id: Optional[str] = None,
     job_store: Optional[JobStore] = None,
 ) -> None:
     """Зеркало _process_upload (webapp/main.py), со статусами в jobs."""
     store = job_store or get_job_store()
-    if task_id:
-        await store.set_task_id(job_id, task_id)
-
     bot = _make_bot()
     audio_path: Optional[str] = None
     try:
@@ -292,14 +287,10 @@ async def run_summary_job(
     user_id: int,
     transcript_id: str,
     *,
-    task_id: Optional[str] = None,
     job_store: Optional[JobStore] = None,
 ) -> None:
     """Краткий конспект готового транскрипта: GPT + доставка как в боте."""
     store = job_store or get_job_store()
-    if task_id:
-        await store.set_task_id(job_id, task_id)
-
     bot = _make_bot()
     try:
         transcripts = get_transcript_store()
@@ -348,14 +339,10 @@ async def run_cleanup_job(
     user_id: int,
     transcript_id: str,
     *,
-    task_id: Optional[str] = None,
     job_store: Optional[JobStore] = None,
 ) -> None:
     """Очистка текста готового транскрипта: GPT + доставка как в боте."""
     store = job_store or get_job_store()
-    if task_id:
-        await store.set_task_id(job_id, task_id)
-
     bot = _make_bot()
     try:
         transcripts = get_transcript_store()

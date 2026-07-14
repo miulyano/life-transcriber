@@ -29,7 +29,7 @@ from bot.config import settings
 from bot.handlers.commands import _build_limit_text
 from bot.services.formatter import render_timecode_segments
 from bot.services.job_store import get_job_store
-from bot.services.task_registry import cancel_task, spawn_transcription
+from bot.services.task_registry import cancel_task, new_task_id, spawn_transcription
 from bot.services.token_store import AUTH_REQUEST_TTL_SEC, get_token_store
 from bot.services.transcript_store import get_transcript_store
 from bot.services.usage_store import LimitExceededError, get_store
@@ -172,17 +172,28 @@ async def _spawn_job(
     *,
     kind: str,
     source: str,
-    runner: Callable[[str, str], Awaitable[None]],
+    runner: Callable[[str], Awaitable[None]],
+    on_start_failure: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> dict:
-    """Create a job, spawn its runner, and persist the task_id BEFORE
-    returning the job_id to the agent — so cancel_job never observes a
-    queued job without a cancel token (closes the immediate-cancel race)."""
+    """Create a job, persist its task_id, THEN spawn the runner.
+
+    Ordering matters: the token is written before the asyncio task exists,
+    so (a) cancel_job never sees a queued job without a cancel token, and
+    (b) a failed persist leaves the job queued but with no running task
+    (swept by mark_stale_interrupted) rather than a hidden runner the agent
+    never got a job_id for.
+    """
     store = get_job_store()
     job = await store.create(user_id, kind=kind, source=source)
-    task_id = spawn_transcription(
-        user_id, lambda tid: runner(job.id, tid)
-    )
-    await store.set_task_id(job.id, task_id)
+    task_id = new_task_id()
+    try:
+        await store.set_task_id(job.id, task_id)
+    except Exception:
+        await store.finalize(job.id, status="error", error="failed to register job")
+        if on_start_failure is not None:
+            await on_start_failure()
+        raise ToolError("failed to start job, please retry")
+    spawn_transcription(user_id, lambda _tid: runner(job.id), task_id=task_id)
     return {"job_id": job.id}
 
 
@@ -195,10 +206,16 @@ async def request_access(agent_name: str, ctx: Context = None) -> dict:
     deep_link; if it does not open — fallback_links, then pairing_code (the
     user sends the code to the bot as a message). Then poll check_access."""
     agent_name = (agent_name or "agent").strip()[:64] or "agent"
-    _check_rate_limit(_client_ip(ctx))
+    ip = _client_ip(ctx)
+    _check_rate_limit(ip)
     username = await _get_bot_username()
 
-    request, poll_secret = await get_token_store().create_request(agent_name)
+    try:
+        request, poll_secret = await get_token_store().create_request(
+            agent_name, source=ip
+        )
+    except RuntimeError as exc:
+        raise ToolError(str(exc))
     payload = f"mcpauth_{request.id}"
     tg_uri = f"tg://resolve?domain={username}&start={payload}"
     return {
@@ -266,9 +283,7 @@ async def submit_url(url: str, timecodes: bool = True) -> dict:
         user_id,
         kind="url",
         source=url,
-        runner=lambda job_id, task_id: run_url_job(
-            job_id, user_id, url, timecodes=timecodes, task_id=task_id
-        ),
+        runner=lambda job_id: run_url_job(job_id, user_id, url, timecodes=timecodes),
     )
 
 
@@ -306,18 +321,22 @@ async def submit_file(file_id: str, timecodes: bool = True) -> dict:
         os.unlink(claimed_path)
         raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
 
+    async def _cleanup_claim() -> None:
+        if os.path.exists(claimed_path):
+            os.unlink(claimed_path)
+
     return await _spawn_job(
         user_id,
         kind="file",
         source=filename_hint,
-        runner=lambda job_id, task_id: run_file_job(
+        runner=lambda job_id: run_file_job(
             job_id,
             user_id,
             claimed_path,
             filename_hint=filename_hint,
             timecodes=timecodes,
-            task_id=task_id,
         ),
+        on_start_failure=_cleanup_claim,
     )
 
 
@@ -447,9 +466,7 @@ async def make_summary(transcript_id: str) -> dict:
         user_id,
         kind="summary",
         source=transcript_id,
-        runner=lambda job_id, task_id: run_summary_job(
-            job_id, user_id, transcript_id, task_id=task_id
-        ),
+        runner=lambda job_id: run_summary_job(job_id, user_id, transcript_id),
     )
 
 
@@ -465,9 +482,7 @@ async def cleanup_text(transcript_id: str) -> dict:
         user_id,
         kind="cleanup",
         source=transcript_id,
-        runner=lambda job_id, task_id: run_cleanup_job(
-            job_id, user_id, transcript_id, task_id=task_id
-        ),
+        runner=lambda job_id: run_cleanup_job(job_id, user_id, transcript_id),
     )
 
 

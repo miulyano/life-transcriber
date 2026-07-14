@@ -117,7 +117,13 @@ async def test_request_access_payload(token_store, bot_username):
     assert "deep_link" in result["instructions"] or "pairing_code" in result["instructions"]
 
 
-async def test_request_access_rate_limited(token_store, bot_username):
+async def test_request_access_rate_limited(token_store, bot_username, monkeypatch):
+    # мок create_request, чтобы упереться именно в IP rate-limit, а не в
+    # per-source pending-cap (он строже и сработал бы раньше)
+    fake_req = SimpleNamespace(id="r", pairing_code="ABC123")
+    monkeypatch.setattr(
+        token_store, "create_request", AsyncMock(return_value=(fake_req, "secret"))
+    )
     for _ in range(5):
         await request_access("claude")
     with pytest.raises(ToolError, match="rate limited"):
@@ -161,7 +167,7 @@ async def test_check_access_wrong_secret(token_store, bot_username):
 async def test_submit_url_spawns_job(job_store, as_user, monkeypatch):
     spawned = []
 
-    def fake_spawn(user_id, coro_factory):
+    def fake_spawn(user_id, coro_factory, *, task_id=None):
         coro = coro_factory("task-1")
         coro.close()
         spawned.append(user_id)
@@ -287,16 +293,21 @@ async def test_submit_url_persists_task_id_before_returning(job_store, as_user, 
         lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
     )
 
-    def fake_spawn(user_id, coro_factory):
-        coro_factory("task-xyz").close()
-        return "task-xyz"
+    seen = {}
+
+    def fake_spawn(user_id, coro_factory, *, task_id=None):
+        # к моменту запуска задачи task_id уже персистнут в job (Fix #3)
+        seen["task_id"] = task_id
+        coro_factory(task_id).close()
+        return task_id
 
     monkeypatch.setattr(server_module, "spawn_transcription", fake_spawn)
 
     result = await submit_url("https://youtube.com/watch?v=x")
 
     job = await job_store.get(result["job_id"], 111)
-    assert job.task_id == "task-xyz"  # персистнут ДО возврата job_id
+    assert job.task_id is not None
+    assert job.task_id == seen["task_id"]  # тот же токен, что ушёл в spawn
 
 
 # ------------------------------------------------------- transcripts / limit
@@ -341,7 +352,7 @@ async def test_make_summary_and_cleanup_spawn_jobs(
 ):
     record = await _seed_transcript(transcript_store)
 
-    def fake_spawn(user_id, coro_factory):
+    def fake_spawn(user_id, coro_factory, *, task_id=None):
         coro_factory("t").close()
         return "t"
 

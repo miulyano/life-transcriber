@@ -29,7 +29,11 @@ from typing import Optional
 from bot.config import settings
 
 AUTH_REQUEST_TTL_SEC = 600  # 10 минут на подтверждение pairing-запроса
-MAX_PENDING_REQUESTS = 10  # глобальный cap: /mcp публичен, cap против флуда
+# /mcp публичен (auth-тулы без токена). Cap — per-source (IP), чтобы один
+# источник флуда не блокировал вход другим пользователям; глобальный cap —
+# только защита БД от неограниченного роста, не admission gate.
+MAX_PENDING_PER_SOURCE = 3
+MAX_PENDING_REQUESTS = 100
 _PAIRING_ALPHABET = string.ascii_uppercase + string.digits
 
 _SCHEMA = """
@@ -52,6 +56,7 @@ CREATE TABLE IF NOT EXISTS auth_requests (
     poll_secret_hash TEXT NOT NULL,
     status           TEXT NOT NULL,
     token_plain      TEXT,
+    source           TEXT NOT NULL DEFAULT 'unknown',
     created_at       TEXT NOT NULL,
     expires_at       TEXT NOT NULL
 );
@@ -60,7 +65,7 @@ CREATE TABLE IF NOT EXISTS auth_requests (
 _TOKEN_COLUMNS = "id, user_id, label, token_hash, created_at, last_used_at, revoked"
 _REQUEST_COLUMNS = (
     "id, pairing_code, user_id, agent_name, poll_secret_hash, status, "
-    "token_plain, created_at, expires_at"
+    "token_plain, source, created_at, expires_at"
 )
 
 
@@ -84,6 +89,7 @@ class AuthRequest:
     poll_secret_hash: str
     status: str  # pending|approved|declined|expired|delivered
     token_plain: Optional[str]
+    source: str
     created_at: str
     expires_at: str
 
@@ -115,6 +121,12 @@ class TokenStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(_SCHEMA)
+        # Migration: auth_requests created before the source column.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(auth_requests)")}
+        if "source" not in cols:
+            conn.execute(
+                "ALTER TABLE auth_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown'"
+            )
         return conn
 
     # ------------------------------------------------------------ api_tokens
@@ -213,15 +225,21 @@ class TokenStore:
 
     # --------------------------------------------------------- auth_requests
 
-    async def create_request(self, agent_name: str) -> tuple[AuthRequest, str]:
-        """Новый pairing-запрос. Возвращает (запись, plaintext poll_secret)."""
+    async def create_request(
+        self, agent_name: str, source: str = "unknown"
+    ) -> tuple[AuthRequest, str]:
+        """Новый pairing-запрос. Возвращает (запись, plaintext poll_secret).
+
+        ``source`` — идентификатор источника (IP за прокси); лимит pending
+        применяется per-source, чтобы один флудер не блокировал вход другим.
+        """
 
         def _run() -> tuple[AuthRequest, str]:
             poll_secret = uuid.uuid4().hex
             now = _now()
             with self._connect() as conn:
                 self._expire_stale(conn, now)
-                self._enforce_pending_cap(conn)
+                self._enforce_pending_cap(conn, source)
                 record = AuthRequest(
                     id=uuid.uuid4().hex,
                     pairing_code="",
@@ -230,6 +248,7 @@ class TokenStore:
                     poll_secret_hash=_sha256(poll_secret),
                     status="pending",
                     token_plain=None,
+                    source=source,
                     created_at=now.isoformat(),
                     expires_at=(now + timedelta(seconds=AUTH_REQUEST_TTL_SEC)).isoformat(),
                 )
@@ -241,7 +260,7 @@ class TokenStore:
                     try:
                         conn.execute(
                             f"INSERT INTO auth_requests ({_REQUEST_COLUMNS}) "
-                            "VALUES (?,?,?,?,?,?,?,?,?)",
+                            "VALUES (?,?,?,?,?,?,?,?,?,?)",
                             (
                                 record.id,
                                 record.pairing_code,
@@ -250,6 +269,7 @@ class TokenStore:
                                 record.poll_secret_hash,
                                 record.status,
                                 record.token_plain,
+                                record.source,
                                 record.created_at,
                                 record.expires_at,
                             ),
@@ -272,15 +292,22 @@ class TokenStore:
         )
 
     @staticmethod
-    def _enforce_pending_cap(conn: sqlite3.Connection) -> None:
-        # Reject at capacity. Live pending requests are NEVER evicted by
-        # anonymous traffic — that would let a flood invalidate a legitimate
-        # link/code while its owner is deciding to approve (pairing DoS).
-        # Slots only free up via TTL expiry (see _expire_stale, called first).
-        count = conn.execute(
+    def _enforce_pending_cap(conn: sqlite3.Connection, source: str) -> None:
+        # Per-source admission control: a single flooding source can hold at
+        # most MAX_PENDING_PER_SOURCE slots, so it cannot lock legitimate
+        # users out of pairing. The global cap only guards the table against
+        # unbounded growth across many sources. Live requests are never
+        # evicted — slots free up via TTL expiry (_expire_stale, called first).
+        per_source = conn.execute(
+            "SELECT COUNT(*) FROM auth_requests WHERE status='pending' AND source=?",
+            (source,),
+        ).fetchone()[0]
+        if per_source >= MAX_PENDING_PER_SOURCE:
+            raise RuntimeError("Too many pending authorization requests from this source")
+        total = conn.execute(
             "SELECT COUNT(*) FROM auth_requests WHERE status='pending'"
         ).fetchone()[0]
-        if count >= MAX_PENDING_REQUESTS:
+        if total >= MAX_PENDING_REQUESTS:
             raise RuntimeError("Too many pending authorization requests, try later")
 
     async def get_request(self, request_id: str) -> Optional[AuthRequest]:

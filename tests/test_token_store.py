@@ -7,7 +7,7 @@ import pytest
 
 from bot.services.token_store import (
     AUTH_REQUEST_TTL_SEC,
-    MAX_PENDING_REQUESTS,
+    MAX_PENDING_PER_SOURCE,
     TokenStore,
 )
 
@@ -82,9 +82,10 @@ async def test_touch_last_used(store):
 
 
 async def test_create_request_fields(store):
-    req, poll_secret = await store.create_request(agent_name="claude")
+    req, poll_secret = await store.create_request(agent_name="claude", source="1.2.3.4")
     assert req.status == "pending"
     assert req.user_id is None
+    assert req.source == "1.2.3.4"
     assert len(req.pairing_code) == 6
     assert req.pairing_code.isalnum() and req.pairing_code == req.pairing_code.upper()
     # секрет не хранится в открытом виде
@@ -186,29 +187,36 @@ async def test_expired_request_not_approvable(store):
     assert await store.approve(req.id, user_id=111) is None
 
 
-async def test_pending_cap_rejects_when_full_of_fresh(store):
-    # свежие живые запросы НЕ вытесняются анонимным трафиком: при
-    # переполнении новое создание отклоняется (Fix #4: pairing DoS)
+async def test_per_source_cap_rejects_flood(store):
+    # один источник (IP) может держать максимум MAX_PENDING_PER_SOURCE слотов
     reqs = []
-    for _ in range(MAX_PENDING_REQUESTS):
-        req, _ = await store.create_request(agent_name="flood")
+    for _ in range(MAX_PENDING_PER_SOURCE):
+        req, _ = await store.create_request(agent_name="flood", source="1.2.3.4")
         reqs.append(req)
-    with pytest.raises(RuntimeError):
-        await store.create_request(agent_name="one-more")
-    # все существующие живы и биндятся
+    with pytest.raises(RuntimeError, match="this source"):
+        await store.create_request(agent_name="one-more", source="1.2.3.4")
+    # существующие живы
     assert await store.bind_user(reqs[0].id, user_id=111) is True
+
+
+async def test_flood_does_not_block_other_source(store):
+    # Fix #4: флуд одного IP не блокирует вход другому пользователю
+    for _ in range(MAX_PENDING_PER_SOURCE):
+        await store.create_request(agent_name="flood", source="1.2.3.4")
+    legit, _ = await store.create_request(agent_name="legit", source="9.9.9.9")
+    assert legit.status == "pending"
 
 
 async def test_pending_cap_expired_frees_slot(store):
     reqs = []
-    for _ in range(MAX_PENDING_REQUESTS):
-        req, _ = await store.create_request(agent_name="flood")
+    for _ in range(MAX_PENDING_PER_SOURCE):
+        req, _ = await store.create_request(agent_name="flood", source="1.2.3.4")
         reqs.append(req)
     # истёкший по TTL запрос освобождает слот (lazy-expire), живые — нет
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     await store._set_expires_at(reqs[0].id, past)
 
-    req_new, _ = await store.create_request(agent_name="legit")
+    req_new, _ = await store.create_request(agent_name="legit", source="1.2.3.4")
     assert req_new.status == "pending"
 
 

@@ -38,15 +38,27 @@ def get_semaphore() -> asyncio.Semaphore:
     return _semaphore
 
 
+def new_task_id() -> str:
+    """Allocate a cancel token without spawning yet — lets a caller persist
+    the id before starting the task (closes the immediate-cancel window)."""
+    return uuid.uuid4().hex[:16]
+
+
 def spawn_transcription(
-    user_id: int, coro_factory: Callable[[str], Awaitable[None]]
+    user_id: int,
+    coro_factory: Callable[[str], Awaitable[None]],
+    *,
+    task_id: Optional[str] = None,
 ) -> str:
     """Run a transcription as an independent task; return its cancel token.
 
     The factory receives the task id so the processor can put a cancel button
-    on its progress message before the task itself is created.
+    on its progress message before the task itself is created. Pass an
+    explicit ``task_id`` (from :func:`new_task_id`) to register the same
+    token that was already persisted for the job.
     """
-    task_id = uuid.uuid4().hex[:16]
+    if task_id is None:
+        task_id = new_task_id()
 
     async def _runner() -> None:
         try:

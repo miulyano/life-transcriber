@@ -8,8 +8,10 @@ Stateless-режим: каждый вызов тула — отдельный HT
 Все статусы и результаты дублируются в TG-чат пользователя (chat_id =
 user_id из токена) через существующие ProgressReporter/delivery-механизмы.
 """
-from __future__ import annotations
-
+# NB: do NOT add `from __future__ import annotations` here. FastMCP inspects
+# tool parameter annotations with issubclass(param.annotation, Context); with
+# stringized annotations that call raises "issubclass() arg 1 must be a class"
+# on older mcp SDKs (seen on 1.12.x). Keep annotations as real objects.
 import asyncio
 import logging
 import os

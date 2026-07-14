@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.1] – 2026-07-14
+
+### Fixed
+
+- webapp падал при старте с `TypeError: issubclass() arg 1 must be a class`: `from __future__ import annotations` в `webapp/mcp_server.py` строкизировал аннотации тулов, а FastMCP на mcp SDK 1.12.x (версия на проде) делает `issubclass(param.annotation, Context)` на строке. Future-import убран; добавлен регрессионный тест
+
 ## [1.15.0] – 2026-07-14
 
 ### Added

@@ -24,8 +24,11 @@ from bot.services.token_store import get_token_store
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
+from fastapi import Depends
+
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
+from webapp.deps import resolve_user_id
 from webapp.mcp_auth import MCPBearerAuth
 from webapp.mcp_server import mcp
 from webapp.transcripts_api import router as transcripts_router
@@ -234,6 +237,33 @@ async def upload(
     # --- Respond immediately, transcribe in background ---
     background_tasks.add_task(_process_upload, dest, user_id, file.filename, timecodes)
     return {"ok": True}
+
+
+@app.post("/api/files")
+async def upload_file_for_agent(
+    file: UploadFile, user_id: int = Depends(resolve_user_id)
+) -> dict:
+    """Upload a media file for a later MCP submit_file(file_id) call.
+
+    The user_id embedded in the filename is the ownership check: submit_file
+    globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
+    swept by the periodic temp cleanup (6h TTL).
+    """
+    os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    file_id = uuid.uuid4().hex
+    safe_name = os.path.basename(file.filename or "upload").replace("/", "_") or "upload"
+    dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{safe_name}")
+
+    bytes_written = 0
+    async with aiofiles.open(dest, "wb") as f:
+        while chunk := await file.read(1 << 20):
+            bytes_written += len(chunk)
+            await f.write(chunk)
+
+    logger.info(
+        "Saved agent file %s (user %s, bytes=%s)", dest, user_id, bytes_written
+    )
+    return {"file_id": file_id}
 
 
 app.include_router(transcripts_router)

@@ -129,10 +129,16 @@ async def download_audio(
             )
         try:
             return await download_podcast_episode_from_yandex_music(url, output_dir)
-        except YandexMusicNotPodcastError:
-            pass
-        except RuntimeError:
-            pass
+        except YandexMusicNotPodcastError as e:
+            # Expected control flow: the link is Yandex Music but not a podcast
+            # episode, so the yt-dlp fallback below is the right next step.
+            logger.debug("Yandex Music episode extractor skipped: %s", e)
+        except RuntimeError as e:
+            # A real extractor failure (dead API endpoint, captcha, HTTP error).
+            # Don't swallow it silently — log before falling back to yt-dlp so
+            # the actual cause stays diagnosable.
+            logger.warning("Yandex Music episode extractor failed, "
+                           "falling back to yt-dlp: %s", e)
 
         try:
             return await _download_with_ytdlp(

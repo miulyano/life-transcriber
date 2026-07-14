@@ -11,7 +11,7 @@ from aiogram.types import Message
 from bot.config import settings
 from bot.handlers._timecode_prompt import ask_timecodes
 from bot.services.downloader import detect_link_source_type, download_audio
-from bot.services.error_messages import format_download_error
+from bot.services.error_messages import format_download_error, format_exception_chain
 from bot.services.pending_jobs import PendingJob
 from bot.services.source_meta import SourceMetadata
 from bot.services.task_registry import cancel_keyboard, get_semaphore
@@ -101,9 +101,15 @@ async def process_link(
                         on_postprocess=lambda: reporter.set_phase("Готовлю аудио…"),
                     )
                 except RuntimeError as e:
-                    # The friendly message hides the real cause; log it so
-                    # transient provider failures stay diagnosable.
-                    logger.warning("Download failed for %s: %s", url, e)
+                    # The friendly message hides the real cause; log the whole
+                    # `raise ... from` chain so transient provider failures
+                    # (e.g. a yt-dlp crash wrapped in a UserFacingError) stay
+                    # diagnosable.
+                    logger.warning(
+                        "Download failed for %s: %s",
+                        url,
+                        format_exception_chain(e),
+                    )
                     await reporter.fail(_friendly_error(e))
                     return
                 await reporter.set_phase("Транскрибирую…")

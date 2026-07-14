@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ошибки скачивания Яндекс Музыки больше не теряются в логах: реальная причина (краш yt-dlp, мёртвый API-endpoint, капча) раньше дважды проглатывалась — молчаливый `except RuntimeError: pass` в fallback-цепочке и потеря `__cause__` при логировании. Теперь `bot.handlers.links` пишет всю цепочку `raise ... from` (`format_exception_chain`), а `bot.services.downloader` логирует ошибку custom-экстрактора перед откатом на yt-dlp. Само скачивание не меняется — правки только для диагностируемости
 - Транскрибация на Universal-3.5 Pro падала с `"word_boost" is not compatible with universal-3-5-pro`: эта модель (и Slam-1) не принимает `word_boost`. Термины из `word_boost.txt` теперь уходят через `keyterms_prompt` (с match strength `high`/`standard` по `WORD_BOOST_LEVEL`); старые модели (universal/best/nano) по-прежнему используют `word_boost`
 
 ### Changed

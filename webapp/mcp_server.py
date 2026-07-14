@@ -64,6 +64,11 @@ NOT_FOUND_TRANSCRIPT = "transcript not found"
 
 CHECK_ACCESS_RETRY_SEC = 5
 
+# Admission cap on concurrent MCP jobs per user (queued + running). Bounds
+# in-memory tasks, SQLite rows, Telegram API load and paid transcriptions
+# regardless of how fast a token submits.
+MAX_ACTIVE_JOBS_PER_USER = 20
+
 # Rate-limit request_access: анонимный публичный тул. Ключ — последний
 # элемент X-Forwarded-For (его аппендит Caddy; левые элементы
 # attacker-controlled при uvicorn --forwarded-allow-ips "*").
@@ -183,6 +188,14 @@ async def _spawn_job(
     never got a job_id for.
     """
     store = get_job_store()
+    # Admission control: the process semaphore only caps work AFTER a task
+    # starts, so without this a token could submit jobs arbitrarily fast —
+    # growing tasks/rows, flooding Telegram, and racking up paid work.
+    if await store.count_active(user_id) >= MAX_ACTIVE_JOBS_PER_USER:
+        raise ToolError(
+            f"too many active jobs ({MAX_ACTIVE_JOBS_PER_USER} max) — "
+            "wait for some to finish or cancel them"
+        )
     job = None
     try:
         job = await store.create(user_id, kind=kind, source=source)

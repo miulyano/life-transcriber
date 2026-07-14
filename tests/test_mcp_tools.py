@@ -193,6 +193,25 @@ async def test_submit_url_invalid(job_store, as_user):
         await submit_url("not-a-url")
 
 
+async def test_submit_url_admission_cap(job_store, as_user, monkeypatch):
+    """Флуд джобами ограничен per-user cap активных задач."""
+    monkeypatch.setattr(server_module, "MAX_ACTIVE_JOBS_PER_USER", 2)
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
+    )
+    monkeypatch.setattr(
+        server_module, "spawn_transcription", lambda u, f, *, task_id=None: (f("t").close(), "t")[1]
+    )
+    # два активных (не спавним реальный раннер — джобы остаются queued)
+    await job_store.create(111, kind="url")
+    await job_store.create(111, kind="url")
+
+    with pytest.raises(ToolError, match="too many active jobs"):
+        await submit_url("https://youtube.com/watch?v=x")
+
+
 async def test_submit_url_limit_exhausted(job_store, as_user, monkeypatch):
     from bot.services.usage_store import LimitExceededError
 

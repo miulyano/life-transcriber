@@ -220,6 +220,19 @@ class JobStore:
 
         await asyncio.to_thread(_run)
 
+    async def count_active(self, user_id: int) -> int:
+        """Число незавершённых джоб пользователя (queued|running)."""
+
+        def _run() -> int:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM jobs "
+                    "WHERE user_id=? AND status IN ('queued','running')",
+                    (user_id,),
+                ).fetchone()[0]
+
+        return await asyncio.to_thread(_run)
+
     async def get(self, job_id: str, user_id: int) -> Optional[JobRecord]:
         def _run() -> Optional[JobRecord]:
             with self._connect() as conn:

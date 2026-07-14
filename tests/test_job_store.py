@@ -102,6 +102,18 @@ async def test_mark_stale_interrupted(store):
     assert (await store.get(j3.id, 111)).status == "done"
 
 
+async def test_count_active(store):
+    await store.create(user_id=111, kind="url")  # queued
+    j2 = await store.create(user_id=111, kind="url")
+    await store.advance(j2.id, phase="x")  # running
+    j3 = await store.create(user_id=111, kind="url")
+    await store.finalize(j3.id, status="done")  # терминальная — не считается
+    await store.create(user_id=222, kind="url")  # чужой
+
+    assert await store.count_active(111) == 2
+    assert await store.count_active(222) == 1
+
+
 async def test_cleanup_old(store, tmp_path):
     job = await store.create(user_id=111, kind="summary", source="t1")
     result_file = tmp_path / "job_result.txt"

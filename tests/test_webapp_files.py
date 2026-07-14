@@ -143,11 +143,11 @@ async def test_submit_file_claims_atomically(temp_dir, as_user, job_store, monke
         await submit_file("abc123")
 
 
-async def test_submit_file_returns_claim_on_limit(temp_dir, as_user, job_store, monkeypatch):
-    """M2: сбой лимита возвращает загрузку (mcpfile) для ретрая, не теряет её."""
+async def test_submit_file_retryable_after_limit(temp_dir, as_user, job_store, monkeypatch):
+    """M2: сбой лимита возвращает загрузку к mcpfile-имени — file_id ретраебелен."""
     from bot.services.usage_store import LimitExceededError
 
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"data")
     monkeypatch.setattr(
         server_module,
         "get_store",
@@ -159,14 +159,15 @@ async def test_submit_file_returns_claim_on_limit(temp_dir, as_user, job_store, 
     with pytest.raises(ToolError, match="limit"):
         await submit_file("abc123")
 
-    # claimed-файл подчищен, осиротевших mcpclaim_ нет
-    leftovers = [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")]
-    assert leftovers == []
+    # тот же file_id снова резолвится (файл вернулся к mcpfile-имени)
+    restored = temp_dir / "mcpfile_111_abc123_rec.mp3"
+    assert restored.exists() and restored.read_bytes() == b"data"
+    assert [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")] == []
 
 
-async def test_submit_file_returns_claim_on_spawn_failure(temp_dir, as_user, job_store, monkeypatch):
-    """M2: сбой регистрации задачи возвращает загрузку, не оставляет сироту."""
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+async def test_submit_file_retryable_after_spawn_failure(temp_dir, as_user, job_store, monkeypatch):
+    """M2: сбой регистрации задачи возвращает загрузку, file_id ретраебелен."""
+    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"data")
     monkeypatch.setattr(
         server_module,
         "get_store",
@@ -181,5 +182,25 @@ async def test_submit_file_returns_claim_on_spawn_failure(temp_dir, as_user, job
     with pytest.raises(ToolError, match="failed to start"):
         await submit_file("abc123")
 
-    leftovers = [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")]
-    assert leftovers == []
+    assert (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
+    assert [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")] == []
+
+
+async def test_submit_file_retryable_after_cancellation(temp_dir, as_user, job_store, monkeypatch):
+    """M2: CancelledError между claim и spawn тоже возвращает загрузку."""
+    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"data")
+
+    async def cancel(*a, **k):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(assert_within_limit=cancel),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await submit_file("abc123")
+
+    assert (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
+    assert [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")] == []

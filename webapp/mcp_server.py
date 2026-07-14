@@ -173,7 +173,6 @@ async def _spawn_job(
     kind: str,
     source: str,
     runner: Callable[[str], Awaitable[None]],
-    on_start_failure: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> dict:
     """Create a job, persist its task_id, THEN spawn the runner.
 
@@ -194,8 +193,6 @@ async def _spawn_job(
     except Exception:
         if job is not None:
             await store.finalize(job.id, status="error", error="failed to start job")
-        if on_start_failure is not None:
-            await on_start_failure()
         raise ToolError("failed to start job, please retry")
     return {"job_id": job.id}
 
@@ -318,35 +315,36 @@ async def submit_file(file_id: str, timecodes: bool = True) -> dict:
     except OSError:
         raise ToolError("file not found")
 
-    async def _cleanup_claim() -> None:
+    async def _restore_claim() -> None:
+        # Return the upload to its original mcpfile_ name so the agent can
+        # retry with the same file_id. An unlinked or leaked mcpclaim_ file
+        # would no longer match submit_file's glob (data loss).
         if os.path.exists(claimed_path):
-            os.unlink(claimed_path)
+            os.replace(claimed_path, source_path)
 
-    # Every failure between claim and a successful spawn must return the
-    # upload — a leaked mcpclaim_ file no longer matches the mcpfile_ glob,
-    # so the agent could never retry with the same file_id.
+    # ANY failure/cancellation between the claim and a successful spawn must
+    # restore the upload — catch BaseException so CancelledError cannot
+    # strand it either. On success the runner owns and deletes claimed_path.
     try:
-        await get_store().assert_within_limit(user_id)
-    except LimitExceededError as exc:
-        await _cleanup_claim()
-        raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
-    except Exception:
-        await _cleanup_claim()
-        raise
-
-    return await _spawn_job(
-        user_id,
-        kind="file",
-        source=filename_hint,
-        runner=lambda job_id: run_file_job(
-            job_id,
+        try:
+            await get_store().assert_within_limit(user_id)
+        except LimitExceededError as exc:
+            raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
+        return await _spawn_job(
             user_id,
-            claimed_path,
-            filename_hint=filename_hint,
-            timecodes=timecodes,
-        ),
-        on_start_failure=_cleanup_claim,
-    )
+            kind="file",
+            source=filename_hint,
+            runner=lambda job_id: run_file_job(
+                job_id,
+                user_id,
+                claimed_path,
+                filename_hint=filename_hint,
+                timecodes=timecodes,
+            ),
+        )
+    except BaseException:
+        await _restore_claim()
+        raise
 
 
 @mcp.tool()

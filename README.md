@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.14.2-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.15.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -33,7 +33,8 @@ Universal-2 (с акустической диаризацией спикеров
 - 💾 **Хранение генераций** — каждая готовая транскрибация сохраняется на сервере (SQLite + `.txt` без таймкодов + JSON с таймингами предложений); версия с таймкодами рендерится по запросу
 - 🗂 **Вкладка «Мои записи» в Mini App** — список своих генераций (заголовок, канал/автор источника, дата, длительность, источник — YouTube / Яндекс Диск / Голосовое / Файл и т.п.): прислать в чат (обычную или с таймкодами — кнопка таймкодов видна только у длинных записей с сохранёнными сегментами: короткие приходят в чат без таймкодов), удалить вместе с файлом
 - 🏷 **Метка источника и таймкодов** — каждое сообщение с транскриптом (первичная доставка, повторная отправка из Mini App, «Очищенный текст») заканчивается строкой вида `Источник: YouTube · 🕒 с таймкодами` / `… · без таймкодов`
-- 🤖 **REST API для агентов** — список/скачивание/удаление/пересылка генераций по bearer-токену (`API_TOKENS`); каждый пользователь видит только свои записи
+- 🤖 **REST API для агентов** — список/скачивание/удаление/пересылка генераций по bearer-токену; каждый пользователь видит только свои записи
+- 🧩 **MCP-сервер для AI-агентов** — endpoint `/mcp`: агент получает все возможности бота (транскрибация URL/файла, статусы, история, конспект, очистка, лимит), авторизуется через pairing с подтверждением в боте, а статусы и результаты дублируются в Telegram-чат (см. «Подключение агента (MCP)»)
 
 **Формат ответа:**
 - Короткий текст (≤ 2000 символов) — приходит прямо в чате
@@ -44,6 +45,7 @@ Universal-2 (с акустической диаризацией спикеров
 **Команды бота:**
 - `/start`, `/help` — приветствие со списком поддерживаемых входов, описанием лимитов и доступных команд
 - `/limit` — показать текущий месячный лимит транскрибации, использовано и остаток. Для пользователей без лимита отвечает «Лимит на транскрибации не установлен.»
+- `/mcp` — подключение AI-агента: URL MCP-эндпоинта, сниппеты подключения, список активных токенов с кнопками отзыва
 
 **Месячные лимиты часов транскрибации (опционально):** для конкретных пользователей можно задать месячный лимит в часах. Лимиты живут в `bot/data/user_limits.json` (формат `{"<telegram_user_id>": <hours>}`). Расход считается по календарным месяцам UTC и сохраняется в `data/usage.json` (writable volume). Пользователи без записи в `user_limits.json` имеют безлимит. При превышении лимита бот отвечает: «Превышен текущий лимит по часам транскрибации в месяц. Ваш текущий лимит — N часов.» (с правильной плюрализацией). Списание идёт по фактическому duration аудио из ответа AssemblyAI после успешной транскрибации, поэтому в последнем запросе возможен небольшой перерасход — следующий запрос будет заблокирован. На время работы задачи её оценочная длительность (ffprobe) резервируется в лимите, так что параллельные запросы одного пользователя не могут обойти проверку.
 
@@ -71,6 +73,7 @@ Universal-2 (с акустической диаризацией спикеров
 - [Cobalt](https://github.com/imputnet/cobalt) — скачивание видео из Instagram (self-hosted Docker-sidecar)
 - [FFmpeg](https://ffmpeg.org/) — извлечение аудио из видео
 - [FastAPI](https://fastapi.tiangolo.com/) — веб-сервис для Telegram Mini App (загрузка файлов)
+- [MCP](https://modelcontextprotocol.io/) — доступ AI-агентов к боту (streamable-http `/mcp` внутри webapp)
 - [Caddy](https://caddyserver.com/) — shared reverse proxy на VPS с автоматическим TLS (Let's Encrypt)
 - [Telegram Mini Apps](https://core.telegram.org/bots/webapps) — WebView для загрузки файлов без ограничений Bot API
 - Docker + Docker Compose
@@ -287,6 +290,69 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" $BASE/api/transcripts/<id>
 Бот и webapp пишут в одну БД через общий volume — это рассчитано на локальный
 диск одной машины; на сетевых ФС (NFS и т.п.) SQLite в таком режиме не работает.
 
+## Подключение агента (MCP)
+
+Webapp поднимает MCP-сервер (streamable-http) на `https://<your-subdomain>.<your-domain>/mcp` —
+AI-агент (Claude Code и любой MCP-клиент) получает все возможности бота. Все
+статусы прогресса и результаты параллельно дублируются в Telegram-чат владельца
+токена.
+
+**Откуда взять URL:** отправь боту команду `/mcp` — он покажет адрес эндпоинта,
+готовые сниппеты подключения и список активных токенов.
+
+**Авторизация (pairing, инициирует агент):**
+
+```bash
+# 1. Подключить сервер без токена
+claude mcp add --transport http transcriber https://<your-subdomain>.<your-domain>/mcp
+```
+
+2. Агент вызывает `request_access(agent_name)` и показывает ссылку. Основная —
+   `https://telegram.me/<bot>?start=...`; если не открылась, есть резервы:
+   `tg://resolve?...` (нужно приложение Telegram), ссылка на Telegram Web
+   (нужен вход в web-клиент) и 6-значный pairing-код, который можно просто
+   отправить боту сообщением из любого клиента.
+3. В боте появляется запрос «Агент … запрашивает доступ» с кнопками
+   ✅ Разрешить / ❌ Отклонить. user_id берётся из нажавшего — вводить ничего
+   не нужно.
+4. Агент поллит `check_access(request_id, poll_secret)` и получает токен
+   (показывается один раз) + готовую команду переподключения:
+
+```bash
+claude mcp remove transcriber; claude mcp add --transport http transcriber \
+  https://<your-subdomain>.<your-domain>/mcp --header "Authorization: Bearer <your-api-key>"
+```
+
+Токены именованные (по одному на агента), хранятся хэшами в SQLite; отзыв —
+кнопкой в `/mcp`. Переменная `API_TOKENS` в `.env` осталась как legacy-fallback.
+
+**Тулы:**
+
+| Тул | Что делает |
+|---|---|
+| `request_access` / `check_access` | pairing-флоу (работают без токена) |
+| `submit_url(url, timecodes)` | транскрибация по ссылке → `job_id` |
+| `submit_file(file_id, timecodes)` | транскрибация загруженного файла → `job_id` |
+| `get_job_status(job_id)` | статус/фаза/прогресс; при `done` — полный текст |
+| `cancel_job(job_id)` | отмена задачи (в чате — «Отменено») |
+| `list_transcripts` / `get_transcript(id, timecoded)` | история и полный текст (± таймкоды) |
+| `make_summary(id)` / `cleanup_text(id)` | конспект / очистка от слов-паразитов (async-джобы) |
+| `resend_to_chat(id, timecoded)` | переслать готовую запись в чат |
+| `get_limit` | остаток месячного лимита |
+
+**Файлы от агента** (аудио на десятки-сотни МБ) загружаются отдельным
+REST-вызовом под тем же bearer-токеном, затем передаются в `submit_file`:
+
+```bash
+curl -H "Authorization: Bearer <your-api-key>" \
+  -F "file=@recording.mp3" https://<your-subdomain>.<your-domain>/api/files
+# → {"file_id": "..."}; файл живёт до 6 часов до вызова submit_file
+```
+
+Ответы `get_transcript`/`get_job_status` для многочасовых записей могут быть
+сотни КБ. Статусы задач переживают рестарт webapp (висящие помечаются
+`interrupted` — агент пересабмитит).
+
 ## VPS: shared Caddy (reverse proxy для всех проектов)
 
 Caddy не входит в этот репозиторий — он живёт на VPS как общая инфраструктура.
@@ -391,6 +457,7 @@ life-transcriber/
 │   │   ├── _tg_media.py         # скачивание Telegram-файла + запуск пайплайна (process_tg_media)
 │   │   ├── _timecode_prompt.py  # ask_timecodes: регистрирует pending job + клавиатура вопроса
 │   │   ├── commands.py          # /start, /limit
+│   │   ├── mcp_auth.py          # pairing MCP: deep link, pairing-код, кнопки ✅/❌, /mcp
 │   │   └── callbacks.py         # кнопки «Краткий конспект», «Скопировать», выбор tc:
 │   ├── services/
 │   │   ├── transcriber.py       # AssemblyAI Universal-2: транскрибация + диаризация → FormattedTranscript (title + uploader)
@@ -408,6 +475,9 @@ life-transcriber/
 │   │   ├── word_boost.py        # load_word_boost / load_custom_spelling / apply_custom_spelling
 │   │   ├── transcription_pipeline.py # Общий flow: резерв лимита → transcribe → списание → сохранение → deliver
 │   │   ├── transcript_store.py  # Персистентное хранилище генераций: SQLite + .txt/.json файлы
+│   │   ├── token_store.py       # MCP-токены агентов (sha256) + pairing-запросы авторизации
+│   │   ├── job_store.py         # Персистентные MCP-джобы со статусами для опроса агентом
+│   │   ├── derived_texts.py     # Композиция доставки конспекта/очистки (бот и MCP)
 │   │   ├── pending_jobs.py      # In-memory реестр задач, ждущих выбора «с таймкодами/без» (TTL 1 ч)
 │   │   ├── task_registry.py     # Реестр запущенных транскрибаций: семафор одновременности + отмена по кнопке
 │   │   ├── usage_store.py       # Per-user месячные лимиты часов + расход (JSON-стор)
@@ -426,12 +496,15 @@ life-transcriber/
 │       ├── fake_progress.py     # ровный прогресс-бар для операций без реального сигнала
 │       ├── pluralize.py         # plural_ru, format_hm для русских числительных
 │       └── progress.py          # ProgressReporter: один статус с анимированным баром
-├── webapp/                      # Telegram Mini App (FastAPI)
-│   ├── main.py                  # FastAPI app; POST /api/upload; static mount
+├── webapp/                      # Telegram Mini App + MCP (FastAPI)
+│   ├── main.py                  # FastAPI app; /api/upload, /api/files; mount /mcp; static
 │   ├── auth.py                  # validate_init_data: HMAC-SHA256 по BOT_TOKEN
-│   ├── deps.py                  # resolve_user_id: bearer-токен или initData-header
+│   ├── deps.py                  # resolve_user_id: bearer (SQLite + legacy env) или initData
 │   ├── transcripts_api.py       # REST API: list / file / delete / resend
-│   ├── delivery.py              # send_transcript_to_chat(bot, chat_id, text)
+│   ├── delivery.py              # доставка в чат: send_transcript_to_chat, resend-хелперы
+│   ├── mcp_auth.py              # ASGI bearer-middleware для /mcp (identity в ContextVar)
+│   ├── mcp_server.py            # FastMCP: pairing-тулы + все возможности бота
+│   ├── job_runner.py            # Исполнение MCP-джоб: TG-прогрессбар + jobs-статусы
 │   ├── Dockerfile
 │   └── static/
 │       ├── index.html           # TWA UI: вкладки «Загрузить» / «Мои записи»
@@ -441,7 +514,7 @@ life-transcriber/
 ├── Dockerfile                   # для bot-сервиса
 ├── docker-compose.yml           # сервисы: bot, cobalt, webapp
 ├── requirements.txt
-├── requirements-webapp.txt      # fastapi, uvicorn, python-multipart
+├── requirements-webapp.txt      # fastapi, uvicorn, python-multipart, mcp
 ├── requirements-dev.txt
 └── .env.example
 ```
@@ -462,7 +535,8 @@ pytest -v
 порог inline/file, URL regex, chunked-конспекты, HMAC-валидация Mini App initData,
 доставка транскрибации, cleanup временных файлов, хранилище генераций
 (SQLite + файлы, изоляция по user_id), REST API транскрибаций (двойная auth),
-pending-реестр выбора таймкодов.
+pending-реестр выбора таймкодов, MCP (pairing-флоу, bearer-middleware, тулы,
+jobs-статусы, загрузка файлов агентом).
 
 ## Правила разработки
 

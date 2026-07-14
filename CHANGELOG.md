@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP-сервер для AI-агентов: endpoint `/mcp` (streamable-http) в webapp. Агент получает все возможности бота — транскрибация URL/файла (± таймкоды), статус/отмена задач, история, полный текст, конспект, очистка, resend, лимит; статусы прогресса и результаты дублируются в Telegram-чат
+- Агент-инициируемая авторизация: `request_access` → deep link / pairing-код → подтверждение кнопками в боте → `check_access` выдаёт именованный bearer-токен (sha256 в SQLite). Команда `/mcp` в боте — URL подключения, сниппеты и управление токенами
+- Персистентные MCP-джобы со статусами (`jobs` в transcripts.db): агент поллит `get_job_status`, рестарт webapp помечает висящие задачи `interrupted`
+- `POST /api/files` — загрузка больших файлов агентом под bearer для `submit_file`
+
 ### Fixed
 
 - Ошибки скачивания Яндекс Музыки больше не теряются в логах: реальная причина (краш yt-dlp, мёртвый API-endpoint, капча) раньше дважды проглатывалась — молчаливый `except RuntimeError: pass` в fallback-цепочке и потеря `__cause__` при логировании. Теперь `bot.handlers.links` пишет всю цепочку `raise ... from` (`format_exception_chain`), а `bot.services.downloader` логирует ошибку custom-экстрактора перед откатом на yt-dlp. Само скачивание не меняется — правки только для диагностируемости

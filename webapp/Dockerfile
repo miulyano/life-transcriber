@@ -7,6 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 COPY requirements.txt requirements-webapp.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-webapp.txt
 
+# Install latest yt-dlp separately (updates frequently): MCP submit_url
+# downloads run in this container too.
+RUN pip install --no-cache-dir --upgrade yt-dlp
+
 COPY bot/ ./bot/
 COPY webapp/ ./webapp/
 

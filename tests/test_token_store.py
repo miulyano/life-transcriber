@@ -186,27 +186,30 @@ async def test_expired_request_not_approvable(store):
     assert await store.approve(req.id, user_id=111) is None
 
 
-async def test_pending_cap_evicts_only_old(store):
-    # свежие запросы не вытесняются: при переполнении создание падает
-    for _ in range(MAX_PENDING_REQUESTS):
-        await store.create_request(agent_name="flood")
-    with pytest.raises(RuntimeError):
-        await store.create_request(agent_name="one-more")
-
-
-async def test_pending_cap_evicts_stale(store):
+async def test_pending_cap_rejects_when_full_of_fresh(store):
+    # свежие живые запросы НЕ вытесняются анонимным трафиком: при
+    # переполнении новое создание отклоняется (Fix #4: pairing DoS)
     reqs = []
     for _ in range(MAX_PENDING_REQUESTS):
         req, _ = await store.create_request(agent_name="flood")
         reqs.append(req)
-    # состарим первый на >60 сек — он вытеснится
-    old = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
-    await store._set_created_at(reqs[0].id, old)
+    with pytest.raises(RuntimeError):
+        await store.create_request(agent_name="one-more")
+    # все существующие живы и биндятся
+    assert await store.bind_user(reqs[0].id, user_id=111) is True
+
+
+async def test_pending_cap_expired_frees_slot(store):
+    reqs = []
+    for _ in range(MAX_PENDING_REQUESTS):
+        req, _ = await store.create_request(agent_name="flood")
+        reqs.append(req)
+    # истёкший по TTL запрос освобождает слот (lazy-expire), живые — нет
+    past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    await store._set_expires_at(reqs[0].id, past)
 
     req_new, _ = await store.create_request(agent_name="legit")
     assert req_new.status == "pending"
-    # вытесненный больше не биндится
-    assert await store.bind_user(reqs[0].id, user_id=111) is False
 
 
 async def test_cleanup_old_requests(store):

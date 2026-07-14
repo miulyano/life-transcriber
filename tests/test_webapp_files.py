@@ -123,3 +123,21 @@ async def test_submit_file_id_traversal_rejected(temp_dir, as_user, job_store):
     (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
     with pytest.raises(ToolError, match="file not found"):
         await submit_file("../*")
+
+
+async def test_submit_file_claims_atomically(temp_dir, as_user, job_store, monkeypatch):
+    """Fix #2: второй параллельный submit того же file_id проигрывает claim."""
+    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    monkeypatch.setattr(server_module, "spawn_transcription", lambda u, f: (f("t").close(), "t")[1])
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
+    )
+
+    first = await submit_file("abc123")
+    assert (await job_store.get(first["job_id"], 111)).kind == "file"
+    # исходный файл захвачен (переименован) — второй вызов не найдёт
+    assert not (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
+    with pytest.raises(ToolError, match="file not found"):
+        await submit_file("abc123")

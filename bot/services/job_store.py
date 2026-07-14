@@ -58,6 +58,14 @@ _UPDATABLE_FIELDS = {
     "task_id",
 }
 
+_TERMINAL_STATUSES = frozenset(
+    {"done", "error", "cancelled", "interrupted"}
+)
+
+# Sentinel so ``advance`` can distinguish "field omitted" from ``None``
+# (progress=None is a legitimate reset when switching phase).
+_UNSET = object()
+
 
 @dataclass
 class JobRecord:
@@ -133,24 +141,84 @@ class JobStore:
 
         return await asyncio.to_thread(_run)
 
-    async def update(self, job_id: str, **fields) -> None:
-        unknown = set(fields) - _UPDATABLE_FIELDS
+    async def advance(
+        self,
+        job_id: str,
+        *,
+        phase: str = _UNSET,
+        progress: float = _UNSET,
+        promote: bool = True,
+    ) -> bool:
+        """Progress/phase update — only while the job is still active.
+
+        Guarded by ``status IN ('queued','running')`` so a late in-flight
+        write (the SQLite worker keeps running after a task is cancelled)
+        cannot resurrect a terminal job. Returns ``False`` on a lost race.
+        With ``promote`` (default) the job moves to ``running``; pass
+        ``promote=False`` to set a queued-phase label without leaving the
+        queue.
+        """
+        assignments = ["status='running'"] if promote else []
+        values: list = []
+        if phase is not _UNSET:
+            assignments.append("phase=?")
+            values.append(phase)
+        if progress is not _UNSET:
+            assignments.append("progress=?")
+            values.append(progress)
+        assignments.append("updated_at=?")
+        values.append(_now_iso())
+
+        def _run() -> bool:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    f"UPDATE jobs SET {', '.join(assignments)} "
+                    "WHERE id=? AND status IN ('queued','running')",
+                    (*values, job_id),
+                )
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(_run)
+
+    async def finalize(self, job_id: str, *, status: str, **fields) -> bool:
+        """Terminal transition — only from a non-terminal status.
+
+        Guarded by ``status NOT IN (terminal)`` so two terminal writes
+        cannot clobber each other (a cancel racing a late completion).
+        Returns ``False`` when the job is already terminal.
+        """
+        if status not in _TERMINAL_STATUSES:
+            raise ValueError(f"finalize expects a terminal status, got {status!r}")
+        unknown = set(fields) - (_UPDATABLE_FIELDS - {"status"})
         if unknown:
             raise ValueError(f"Unknown job fields: {unknown}")
+        assignments = ["status=?"] + [f"{name}=?" for name in fields]
+        values = [status, *fields.values()]
+        terminal_list = ",".join(f"'{s}'" for s in sorted(_TERMINAL_STATUSES))
+
+        def _run() -> bool:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    f"UPDATE jobs SET {', '.join(assignments)}, updated_at=? "
+                    f"WHERE id=? AND status NOT IN ({terminal_list})",
+                    (*values, _now_iso(), job_id),
+                )
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(_run)
+
+    async def set_task_id(self, job_id: str, task_id: str) -> None:
+        """Persist the cancel token. Written before the job id is exposed to
+        the agent so cancel_job never sees a queued job without a task_id."""
 
         def _run() -> None:
-            assignments = ", ".join(f"{name}=?" for name in fields)
-            values = list(fields.values())
             with self._connect() as conn:
                 conn.execute(
-                    f"UPDATE jobs SET {assignments}, updated_at=? WHERE id=?",
-                    (*values, _now_iso(), job_id),
+                    "UPDATE jobs SET task_id=?, updated_at=? WHERE id=?",
+                    (task_id, _now_iso(), job_id),
                 )
 
         await asyncio.to_thread(_run)
-
-    async def set_task_id(self, job_id: str, task_id: str) -> None:
-        await self.update(job_id, task_id=task_id)
 
     async def get(self, job_id: str, user_id: int) -> Optional[JobRecord]:
         def _run() -> Optional[JobRecord]:

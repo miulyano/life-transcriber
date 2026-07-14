@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 import urllib.parse
+import uuid
 from glob import glob
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from aiogram import Bot
 from mcp.server.fastmcp import Context, FastMCP
@@ -165,6 +167,25 @@ def _connect_snippet(token: str) -> str:
     )
 
 
+async def _spawn_job(
+    user_id: int,
+    *,
+    kind: str,
+    source: str,
+    runner: Callable[[str, str], Awaitable[None]],
+) -> dict:
+    """Create a job, spawn its runner, and persist the task_id BEFORE
+    returning the job_id to the agent — so cancel_job never observes a
+    queued job without a cancel token (closes the immediate-cancel race)."""
+    store = get_job_store()
+    job = await store.create(user_id, kind=kind, source=source)
+    task_id = spawn_transcription(
+        user_id, lambda tid: runner(job.id, tid)
+    )
+    await store.set_task_id(job.id, task_id)
+    return {"job_id": job.id}
+
+
 # --------------------------------------------------------------- auth tools
 
 
@@ -241,14 +262,14 @@ async def submit_url(url: str, timecodes: bool = True) -> dict:
     except LimitExceededError as exc:
         raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
 
-    job = await get_job_store().create(user_id, kind="url", source=url)
-    spawn_transcription(
+    return await _spawn_job(
         user_id,
-        lambda task_id: run_url_job(
-            job.id, user_id, url, timecodes=timecodes, task_id=task_id
+        kind="url",
+        source=url,
+        runner=lambda job_id, task_id: run_url_job(
+            job_id, user_id, url, timecodes=timecodes, task_id=task_id
         ),
     )
-    return {"job_id": job.id}
 
 
 @mcp.tool()
@@ -260,31 +281,44 @@ async def submit_file(file_id: str, timecodes: bool = True) -> dict:
     safe_id = re.sub(r"[^0-9a-f]", "", (file_id or "").lower())
     if not safe_id:
         raise ToolError("file not found")
-    matches = glob(
-        f"{settings.TEMP_DIR}/mcpfile_{user_id}_{safe_id}_*"
-    )
+    matches = glob(f"{settings.TEMP_DIR}/mcpfile_{user_id}_{safe_id}_*")
     if not matches:
         raise ToolError("file not found")
     source_path = matches[0]
-    filename_hint = source_path.split(f"mcpfile_{user_id}_{safe_id}_", 1)[-1]
+    filename_hint = os.path.basename(source_path).split(
+        f"mcpfile_{user_id}_{safe_id}_", 1
+    )[-1]
+
+    # Atomically claim the upload before creating the job: os.replace is
+    # atomic, so a concurrent submit with the same file_id loses the race
+    # and gets "file not found" instead of a duplicate job on the same file.
+    claimed_path = os.path.join(
+        settings.TEMP_DIR, f"mcpclaim_{user_id}_{uuid.uuid4().hex}_{filename_hint}"
+    )
+    try:
+        os.replace(source_path, claimed_path)
+    except OSError:
+        raise ToolError("file not found")
+
     try:
         await get_store().assert_within_limit(user_id)
     except LimitExceededError as exc:
+        os.unlink(claimed_path)
         raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
 
-    job = await get_job_store().create(user_id, kind="file", source=filename_hint)
-    spawn_transcription(
+    return await _spawn_job(
         user_id,
-        lambda task_id: run_file_job(
-            job.id,
+        kind="file",
+        source=filename_hint,
+        runner=lambda job_id, task_id: run_file_job(
+            job_id,
             user_id,
-            source_path,
+            claimed_path,
             filename_hint=filename_hint,
             timecodes=timecodes,
             task_id=task_id,
         ),
     )
-    return {"job_id": job.id}
 
 
 @mcp.tool()
@@ -409,14 +443,14 @@ async def make_summary(transcript_id: str) -> dict:
     record = await get_transcript_store().get(transcript_id, user_id)
     if record is None:
         raise ToolError(NOT_FOUND_TRANSCRIPT)
-    job = await get_job_store().create(user_id, kind="summary", source=transcript_id)
-    spawn_transcription(
+    return await _spawn_job(
         user_id,
-        lambda task_id: run_summary_job(
-            job.id, user_id, transcript_id, task_id=task_id
+        kind="summary",
+        source=transcript_id,
+        runner=lambda job_id, task_id: run_summary_job(
+            job_id, user_id, transcript_id, task_id=task_id
         ),
     )
-    return {"job_id": job.id}
 
 
 @mcp.tool()
@@ -427,14 +461,14 @@ async def cleanup_text(transcript_id: str) -> dict:
     record = await get_transcript_store().get(transcript_id, user_id)
     if record is None:
         raise ToolError(NOT_FOUND_TRANSCRIPT)
-    job = await get_job_store().create(user_id, kind="cleanup", source=transcript_id)
-    spawn_transcription(
+    return await _spawn_job(
         user_id,
-        lambda task_id: run_cleanup_job(
-            job.id, user_id, transcript_id, task_id=task_id
+        kind="cleanup",
+        source=transcript_id,
+        runner=lambda job_id, task_id: run_cleanup_job(
+            job_id, user_id, transcript_id, task_id=task_id
         ),
     )
-    return {"job_id": job.id}
 
 
 @mcp.tool()

@@ -211,7 +211,7 @@ async def test_get_job_status_isolated(job_store, as_user):
 
 async def test_get_job_status_running(job_store, as_user):
     job = await job_store.create(111, kind="url", source="u")
-    await job_store.update(job.id, status="running", phase="Транскрибирую…", progress=0.4)
+    await job_store.advance(job.id, phase="Транскрибирую…", progress=0.4)
 
     result = await get_job_status(job.id)
 
@@ -226,7 +226,7 @@ async def test_get_job_status_done_includes_text(
 ):
     record = await _seed_transcript(transcript_store)
     job = await job_store.create(111, kind="url", source="u")
-    await job_store.update(job.id, status="done", transcript_id=record.id)
+    await job_store.finalize(job.id, status="done", transcript_id=record.id)
 
     result = await get_job_status(job.id)
 
@@ -235,7 +235,7 @@ async def test_get_job_status_done_includes_text(
 
 async def test_get_job_status_done_without_transcript(job_store, as_user, transcript_store):
     job = await job_store.create(111, kind="url", source="u")
-    await job_store.update(job.id, status="done")
+    await job_store.finalize(job.id, status="done")
 
     result = await get_job_status(job.id)
 
@@ -247,7 +247,7 @@ async def test_get_job_status_summary_result(job_store, as_user, tmp_path):
     result_file = tmp_path / "job_x.txt"
     result_file.write_text("конспект", encoding="utf-8")
     job = await job_store.create(111, kind="summary", source="rec")
-    await job_store.update(job.id, status="done", result_path=str(result_file))
+    await job_store.finalize(job.id, status="done", result_path=str(result_file))
 
     result = await get_job_status(job.id)
 
@@ -259,7 +259,7 @@ async def test_get_job_status_summary_result(job_store, as_user, tmp_path):
 
 async def test_cancel_job_terminal(job_store, as_user):
     job = await job_store.create(111, kind="url", source="u")
-    await job_store.update(job.id, status="done")
+    await job_store.finalize(job.id, status="done")
 
     result = await cancel_job(job.id)
 
@@ -268,7 +268,8 @@ async def test_cancel_job_terminal(job_store, as_user):
 
 async def test_cancel_job_running(job_store, as_user, monkeypatch):
     job = await job_store.create(111, kind="url", source="u")
-    await job_store.update(job.id, status="running", task_id="t-1")
+    await job_store.advance(job.id, phase="Транскрибирую…")
+    await job_store.set_task_id(job.id, "t-1")
     cancel_mock = MagicMock(return_value=True)
     monkeypatch.setattr(server_module, "cancel_task", cancel_mock)
 
@@ -276,6 +277,26 @@ async def test_cancel_job_running(job_store, as_user, monkeypatch):
 
     cancel_mock.assert_called_once_with("t-1", 111)
     assert result["cancelled"] is True
+
+
+async def test_submit_url_persists_task_id_before_returning(job_store, as_user, monkeypatch):
+    """Fix #3: cancel_job на свежесозданной джобе видит task_id (нет окна)."""
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
+    )
+
+    def fake_spawn(user_id, coro_factory):
+        coro_factory("task-xyz").close()
+        return "task-xyz"
+
+    monkeypatch.setattr(server_module, "spawn_transcription", fake_spawn)
+
+    result = await submit_url("https://youtube.com/watch?v=x")
+
+    job = await job_store.get(result["job_id"], 111)
+    assert job.task_id == "task-xyz"  # персистнут ДО возврата job_id
 
 
 # ------------------------------------------------------- transcripts / limit

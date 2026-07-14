@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Персистентные MCP-джобы со статусами (`jobs` в transcripts.db): агент поллит `get_job_status`, рестарт webapp помечает висящие задачи `interrupted`
 - `POST /api/files` — загрузка больших файлов агентом под bearer для `submit_file`
 
+### Changed
+
+- MCP job-статусы переведены на conditional-UPDATE переходы (`advance`/`finalize`): поздняя запись прогресса не воскрешает отменённую/завершённую джобу, два терминальных статуса не затирают друг друга
+- `submit_file` атомарно захватывает загрузку (`os.replace`) до создания джобы — параллельный вызов с тем же `file_id` не порождает дубль
+- MCP submit-тулы персистят `task_id` до возврата `job_id` — `cancel_job` больше не отклоняет отмену только что созданной задачи
+- Переполнение pending pairing-запросов теперь отклоняет новые запросы, а не вытесняет живые (анонимный флуд не может инвалидировать легитимный pairing)
+
 ### Fixed
 
 - Ошибки скачивания Яндекс Музыки больше не теряются в логах: реальная причина (краш yt-dlp, мёртвый API-endpoint, капча) раньше дважды проглатывалась — молчаливый `except RuntimeError: pass` в fallback-цепочке и потеря `__cause__` при логировании. Теперь `bot.handlers.links` пишет всю цепочку `raise ... from` (`format_exception_chain`), а `bot.services.downloader` логирует ошибку custom-экстрактора перед откатом на yt-dlp. Само скачивание не меняется — правки только для диагностируемости

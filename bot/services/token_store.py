@@ -30,9 +30,6 @@ from bot.config import settings
 
 AUTH_REQUEST_TTL_SEC = 600  # 10 минут на подтверждение pairing-запроса
 MAX_PENDING_REQUESTS = 10  # глобальный cap: /mcp публичен, cap против флуда
-# Свежие pending не вытесняются: легитимный запрос не должен убиваться
-# мгновенно анонимным флудом (eviction attack).
-EVICTION_MIN_AGE_SEC = 60
 _PAIRING_ALPHABET = string.ascii_uppercase + string.digits
 
 _SCHEMA = """
@@ -224,7 +221,7 @@ class TokenStore:
             now = _now()
             with self._connect() as conn:
                 self._expire_stale(conn, now)
-                self._enforce_pending_cap(conn, now)
+                self._enforce_pending_cap(conn)
                 record = AuthRequest(
                     id=uuid.uuid4().hex,
                     pairing_code="",
@@ -275,23 +272,15 @@ class TokenStore:
         )
 
     @staticmethod
-    def _enforce_pending_cap(conn: sqlite3.Connection, now: datetime) -> None:
+    def _enforce_pending_cap(conn: sqlite3.Connection) -> None:
+        # Reject at capacity. Live pending requests are NEVER evicted by
+        # anonymous traffic — that would let a flood invalidate a legitimate
+        # link/code while its owner is deciding to approve (pairing DoS).
+        # Slots only free up via TTL expiry (see _expire_stale, called first).
         count = conn.execute(
             "SELECT COUNT(*) FROM auth_requests WHERE status='pending'"
         ).fetchone()[0]
-        if count < MAX_PENDING_REQUESTS:
-            return
-        # Вытесняем только достаточно старый pending — свежесозданный
-        # легитимный запрос не должен убиваться мгновенно флудом.
-        eviction_cutoff = (now - timedelta(seconds=EVICTION_MIN_AGE_SEC)).isoformat()
-        cur = conn.execute(
-            "UPDATE auth_requests SET status='expired' WHERE id = ("
-            "  SELECT id FROM auth_requests "
-            "  WHERE status='pending' AND created_at<=? "
-            "  ORDER BY created_at LIMIT 1)",
-            (eviction_cutoff,),
-        )
-        if cur.rowcount == 0:
+        if count >= MAX_PENDING_REQUESTS:
             raise RuntimeError("Too many pending authorization requests, try later")
 
     async def get_request(self, request_id: str) -> Optional[AuthRequest]:

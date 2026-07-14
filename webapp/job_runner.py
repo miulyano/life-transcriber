@@ -67,14 +67,12 @@ class JobReporter:
 
     async def set_phase(self, label: str) -> None:
         await self._inner.set_phase(label)
-        await self._store.update(
-            self._job_id, status="running", phase=label, progress=None
-        )
+        await self._store.advance(self._job_id, phase=label, progress=None)
 
     async def set_progress(self, current: int, total: int) -> None:
         await self._inner.set_progress(current, total)
         if total > 0:
-            await self._store.update(self._job_id, progress=current / total)
+            await self._store.advance(self._job_id, progress=current / total)
 
     async def set_progress_fraction(self, fraction: float) -> None:
         await self._inner.set_progress_fraction(fraction)
@@ -87,14 +85,14 @@ class JobReporter:
         if throttled and not is_final:
             return
         self._last_fraction_write = now
-        await self._store.update(self._job_id, progress=fraction)
+        await self._store.advance(self._job_id, progress=fraction)
 
 
 async def _finalize(
     store: JobStore, job_id: str, *, status: str, **fields
 ) -> None:
     try:
-        await store.update(job_id, status=status, **fields)
+        await store.finalize(job_id, status=status, **fields)
     except Exception:
         logger.exception("Failed to finalize job %s as %s", job_id, status)
 
@@ -129,7 +127,7 @@ async def run_url_job(
         sem = get_semaphore()
         initial = "В очереди…" if sem.locked() else "Скачиваю аудио по ссылке…"
         if sem.locked():
-            await store.update(job_id, phase="В очереди…")
+            await store.advance(job_id, phase="В очереди…", promote=False)
         async with ProgressReporter.for_chat(bot, user_id, initial) as tg_reporter:
             reporter = JobReporter(tg_reporter, store, job_id)
             async with sem:
@@ -214,7 +212,7 @@ async def run_file_job(
         sem = get_semaphore()
         initial = "В очереди…" if sem.locked() else "Готовлю аудио…"
         if sem.locked():
-            await store.update(job_id, phase="В очереди…")
+            await store.advance(job_id, phase="В очереди…", promote=False)
         async with ProgressReporter.for_chat(bot, user_id, initial) as tg_reporter:
             reporter = JobReporter(tg_reporter, store, job_id)
             async with sem:

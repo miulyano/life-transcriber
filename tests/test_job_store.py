@@ -27,9 +27,10 @@ async def test_get_isolated_by_user(store):
     assert (await store.get("nonexistent", user_id=111)) is None
 
 
-async def test_update_fields(store):
+async def test_advance_sets_running(store):
     job = await store.create(user_id=111, kind="url", source="s")
-    await store.update(job.id, status="running", phase="Транскрибирую…", progress=0.5)
+    ok = await store.advance(job.id, phase="Транскрибирую…", progress=0.5)
+    assert ok is True
     got = await store.get(job.id, user_id=111)
     assert got.status == "running"
     assert got.phase == "Транскрибирую…"
@@ -37,12 +38,46 @@ async def test_update_fields(store):
     assert got.updated_at >= got.created_at
 
 
-async def test_update_terminal_with_result(store):
+async def test_advance_progress_only(store):
     job = await store.create(user_id=111, kind="url", source="s")
-    await store.update(job.id, status="done", transcript_id="abc123")
+    await store.advance(job.id, progress=0.3)
+    got = await store.get(job.id, user_id=111)
+    assert got.progress == 0.3
+
+
+async def test_finalize_terminal_with_result(store):
+    job = await store.create(user_id=111, kind="url", source="s")
+    ok = await store.finalize(job.id, status="done", transcript_id="abc123")
+    assert ok is True
     got = await store.get(job.id, user_id=111)
     assert got.status == "done"
     assert got.transcript_id == "abc123"
+
+
+async def test_advance_ignored_after_terminal(store):
+    """Fix #1: поздняя progress-запись не воскрешает завершённую джобу."""
+    job = await store.create(user_id=111, kind="url", source="s")
+    await store.finalize(job.id, status="cancelled")
+
+    ok = await store.advance(job.id, phase="Транскрибирую…", progress=0.9)
+
+    assert ok is False  # проигранная гонка, не перезапись
+    got = await store.get(job.id, user_id=111)
+    assert got.status == "cancelled"
+    assert got.progress is None
+
+
+async def test_finalize_does_not_overwrite_terminal(store):
+    """Терминальный статус нельзя перебить другим терминальным."""
+    job = await store.create(user_id=111, kind="url", source="s")
+    await store.finalize(job.id, status="cancelled")
+
+    ok = await store.finalize(job.id, status="done", transcript_id="x")
+
+    assert ok is False
+    got = await store.get(job.id, user_id=111)
+    assert got.status == "cancelled"
+    assert got.transcript_id is None
 
 
 async def test_set_task_id(store):
@@ -56,8 +91,8 @@ async def test_mark_stale_interrupted(store):
     j1 = await store.create(user_id=111, kind="url", source="s")
     j2 = await store.create(user_id=111, kind="file", source="s")
     j3 = await store.create(user_id=111, kind="url", source="s")
-    await store.update(j2.id, status="running")
-    await store.update(j3.id, status="done", transcript_id="t")
+    await store.advance(j2.id, phase="running")
+    await store.finalize(j3.id, status="done", transcript_id="t")
 
     n = await store.mark_stale_interrupted()
     assert n == 2  # queued + running; done не трогается
@@ -71,7 +106,7 @@ async def test_cleanup_old(store, tmp_path):
     job = await store.create(user_id=111, kind="summary", source="t1")
     result_file = tmp_path / "job_result.txt"
     result_file.write_text("data", encoding="utf-8")
-    await store.update(job.id, status="done", result_path=str(result_file))
+    await store.finalize(job.id, status="done", result_path=str(result_file))
     old = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
     await store._set_created_at(job.id, old)
 

@@ -65,6 +65,25 @@ def test_upload_sanitizes_filename(client, bearer, temp_dir):
     assert ".." not in matches[0]
 
 
+def test_upload_rejects_oversized(client, bearer, temp_dir, monkeypatch):
+    import webapp.main as main_module
+
+    monkeypatch.setattr(main_module, "MAX_AGENT_UPLOAD_BYTES", 10)
+    res = client.post("/api/files", headers=bearer, files={"file": ("big.mp3", b"x" * 50)})
+    assert res.status_code == 413
+    # частичная запись не осталась на диске
+    assert [p for p in os.listdir(temp_dir) if p.startswith("mcpfile_")] == []
+
+
+def test_upload_rejects_over_quota(client, bearer, temp_dir, monkeypatch):
+    import webapp.main as main_module
+
+    monkeypatch.setattr(main_module, "MAX_AGENT_PENDING_BYTES", 5)
+    (temp_dir / "mcpfile_111_existing_a.mp3").write_bytes(b"already-there")
+    res = client.post("/api/files", headers=bearer, files={"file": ("more.mp3", b"x")})
+    assert res.status_code == 413
+
+
 # ---------------------------------------------------------------- submit_file
 
 
@@ -84,18 +103,28 @@ def job_store(tmp_path, monkeypatch):
 
 async def test_submit_file_unknown_id(temp_dir, as_user, job_store):
     with pytest.raises(ToolError, match="file not found"):
-        await submit_file("deadbeef")
+        await submit_file("a" * 32)  # валидный формат, но нет файла
+
+
+async def test_submit_file_rejects_truncated_id(temp_dir, as_user, job_store):
+    """M2: короткий id не используется как glob-префикс для чужой загрузки."""
+    (temp_dir / "mcpfile_111_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_rec.mp3").write_bytes(b"x")
+    # "a" как префикс матчил бы файл выше — но требуется ровно 32 hex
+    with pytest.raises(ToolError, match="file not found"):
+        await submit_file("a")
+    # файл на месте, не тронут
+    assert (temp_dir / "mcpfile_111_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_rec.mp3").exists()
 
 
 async def test_submit_file_foreign_file(temp_dir, as_user, job_store):
     # файл загружен другим пользователем — glob по user_id не найдёт
-    (temp_dir / "mcpfile_222_abc123_rec.mp3").write_bytes(b"x")
+    (temp_dir / "mcpfile_222_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"x")
     with pytest.raises(ToolError, match="file not found"):
-        await submit_file("abc123")
+        await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 
 
 async def test_submit_file_spawns_job(temp_dir, as_user, job_store, monkeypatch):
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"x")
     spawned = []
 
     def fake_spawn(user_id, coro_factory, *, task_id=None):
@@ -110,7 +139,7 @@ async def test_submit_file_spawns_job(temp_dir, as_user, job_store, monkeypatch)
         lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
     )
 
-    result = await submit_file("abc123")
+    result = await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 
     assert spawned == [111]
     job = await job_store.get(result["job_id"], 111)
@@ -120,14 +149,14 @@ async def test_submit_file_spawns_job(temp_dir, as_user, job_store, monkeypatch)
 
 async def test_submit_file_id_traversal_rejected(temp_dir, as_user, job_store):
     # символы вне [0-9a-f] вычищаются — glob-инъекция невозможна
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"x")
     with pytest.raises(ToolError, match="file not found"):
         await submit_file("../*")
 
 
 async def test_submit_file_claims_atomically(temp_dir, as_user, job_store, monkeypatch):
     """Fix #2: второй параллельный submit того же file_id проигрывает claim."""
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"x")
+    (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"x")
     monkeypatch.setattr(server_module, "spawn_transcription", lambda u, f, *, task_id=None: (f("t").close(), "t")[1])
     monkeypatch.setattr(
         server_module,
@@ -135,19 +164,19 @@ async def test_submit_file_claims_atomically(temp_dir, as_user, job_store, monke
         lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
     )
 
-    first = await submit_file("abc123")
+    first = await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
     assert (await job_store.get(first["job_id"], 111)).kind == "file"
     # исходный файл захвачен (переименован) — второй вызов не найдёт
-    assert not (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
+    assert not (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").exists()
     with pytest.raises(ToolError, match="file not found"):
-        await submit_file("abc123")
+        await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 
 
 async def test_submit_file_retryable_after_limit(temp_dir, as_user, job_store, monkeypatch):
     """M2: сбой лимита возвращает загрузку к mcpfile-имени — file_id ретраебелен."""
     from bot.services.usage_store import LimitExceededError
 
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"data")
+    (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"data")
     monkeypatch.setattr(
         server_module,
         "get_store",
@@ -157,17 +186,17 @@ async def test_submit_file_retryable_after_limit(temp_dir, as_user, job_store, m
     )
 
     with pytest.raises(ToolError, match="limit"):
-        await submit_file("abc123")
+        await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 
     # тот же file_id снова резолвится (файл вернулся к mcpfile-имени)
-    restored = temp_dir / "mcpfile_111_abc123_rec.mp3"
+    restored = temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3"
     assert restored.exists() and restored.read_bytes() == b"data"
     assert [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")] == []
 
 
 async def test_submit_file_retryable_after_spawn_failure(temp_dir, as_user, job_store, monkeypatch):
     """M2: сбой регистрации задачи возвращает загрузку, file_id ретраебелен."""
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"data")
+    (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"data")
     monkeypatch.setattr(
         server_module,
         "get_store",
@@ -180,15 +209,15 @@ async def test_submit_file_retryable_after_spawn_failure(temp_dir, as_user, job_
     monkeypatch.setattr(server_module, "spawn_transcription", boom)
 
     with pytest.raises(ToolError, match="failed to start"):
-        await submit_file("abc123")
+        await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 
-    assert (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
+    assert (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").exists()
     assert [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")] == []
 
 
 async def test_submit_file_retryable_after_cancellation(temp_dir, as_user, job_store, monkeypatch):
     """M2: CancelledError между claim и spawn тоже возвращает загрузку."""
-    (temp_dir / "mcpfile_111_abc123_rec.mp3").write_bytes(b"data")
+    (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").write_bytes(b"data")
 
     async def cancel(*a, **k):
         raise asyncio.CancelledError()
@@ -200,7 +229,7 @@ async def test_submit_file_retryable_after_cancellation(temp_dir, as_user, job_s
     )
 
     with pytest.raises(asyncio.CancelledError):
-        await submit_file("abc123")
+        await submit_file("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
 
-    assert (temp_dir / "mcpfile_111_abc123_rec.mp3").exists()
+    assert (temp_dir / "mcpfile_111_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4_rec.mp3").exists()
     assert [p for p in os.listdir(temp_dir) if p.startswith("mcpclaim_")] == []

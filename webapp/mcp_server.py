@@ -293,8 +293,11 @@ async def submit_file(file_id: str, timecodes: bool = True) -> dict:
     (multipart field "file", same bearer token) → {"file_id"}. The uploaded
     file lives up to 6 hours and is consumed by this call."""
     user_id = _require_user_id()
-    safe_id = re.sub(r"[^0-9a-f]", "", (file_id or "").lower())
-    if not safe_id:
+    # Require the exact 32-char uuid4 hex issued by POST /api/files. A
+    # truncated id (e.g. "a") used as a glob prefix could otherwise claim a
+    # different upload of the same user and transcribe the wrong file.
+    safe_id = (file_id or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", safe_id):
         raise ToolError("file not found")
     matches = glob(f"{settings.TEMP_DIR}/mcpfile_{user_id}_{safe_id}_*")
     if not matches:
@@ -312,6 +315,9 @@ async def submit_file(file_id: str, timecodes: bool = True) -> dict:
     )
     try:
         os.replace(source_path, claimed_path)
+        # os.replace preserves mtime; refresh it so an upload claimed near
+        # its 6h TTL is not swept by the temp cleaner mid-processing.
+        os.utime(claimed_path, None)
     except OSError:
         raise ToolError("file not found")
 

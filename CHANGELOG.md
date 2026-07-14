@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] – 2026-07-14
+
 ### Added
 
 - MCP-сервер для AI-агентов: endpoint `/mcp` (streamable-http) в webapp. Агент получает все возможности бота — транскрибация URL/файла (± таймкоды), статус/отмена задач, история, полный текст, конспект, очистка, resend, лимит; статусы прогресса и результаты дублируются в Telegram-чат

@@ -69,6 +69,18 @@ CHECK_ACCESS_RETRY_SEC = 5
 # regardless of how fast a token submits.
 MAX_ACTIVE_JOBS_PER_USER = 20
 
+# Serializes a single user's job submissions so the admission check and the
+# job insert are atomic (per-process; single-process uvicorn).
+_submit_locks: dict[int, asyncio.Lock] = {}
+
+
+def _submit_lock(user_id: int) -> asyncio.Lock:
+    lock = _submit_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _submit_locks[user_id] = lock
+    return lock
+
 # Rate-limit request_access: анонимный публичный тул. Ключ — последний
 # элемент X-Forwarded-For (его аппендит Caddy; левые элементы
 # attacker-controlled при uvicorn --forwarded-allow-ips "*").
@@ -188,25 +200,31 @@ async def _spawn_job(
     never got a job_id for.
     """
     store = get_job_store()
-    # Admission control: the process semaphore only caps work AFTER a task
-    # starts, so without this a token could submit jobs arbitrarily fast —
-    # growing tasks/rows, flooding Telegram, and racking up paid work.
-    if await store.count_active(user_id) >= MAX_ACTIVE_JOBS_PER_USER:
-        raise ToolError(
-            f"too many active jobs ({MAX_ACTIVE_JOBS_PER_USER} max) — "
-            "wait for some to finish or cancel them"
-        )
     job = None
-    try:
-        job = await store.create(user_id, kind=kind, source=source)
-        task_id = new_task_id()
-        await store.set_task_id(job.id, task_id)
-        # Spawn last: once the task exists, only the runner owns cleanup.
-        spawn_transcription(user_id, lambda _tid: runner(job.id), task_id=task_id)
-    except Exception:
-        if job is not None:
-            await store.finalize(job.id, status="error", error="failed to start job")
-        raise ToolError("failed to start job, please retry")
+    # Serialize a user's submits so the admission check and the insert are
+    # atomic: count_active + create use separate transactions, so without
+    # the lock concurrent submits would all see < cap and each create a job
+    # (TOCTOU), restoring the flood this cap prevents. Single-process uvicorn
+    # → an in-process lock suffices.
+    async with _submit_lock(user_id):
+        # Admission control: the process semaphore only caps work AFTER a
+        # task starts, so without this a token could submit jobs arbitrarily
+        # fast — growing tasks/rows, flooding Telegram, racking up paid work.
+        if await store.count_active(user_id) >= MAX_ACTIVE_JOBS_PER_USER:
+            raise ToolError(
+                f"too many active jobs ({MAX_ACTIVE_JOBS_PER_USER} max) — "
+                "wait for some to finish or cancel them"
+            )
+        try:
+            job = await store.create(user_id, kind=kind, source=source)
+            task_id = new_task_id()
+            await store.set_task_id(job.id, task_id)
+            # Spawn last: once the task exists, only the runner owns cleanup.
+            spawn_transcription(user_id, lambda _tid: runner(job.id), task_id=task_id)
+        except Exception:
+            if job is not None:
+                await store.finalize(job.id, status="error", error="failed to start job")
+            raise ToolError("failed to start job, please retry")
     return {"job_id": job.id}
 
 

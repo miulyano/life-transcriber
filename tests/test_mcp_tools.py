@@ -196,6 +196,7 @@ async def test_submit_url_invalid(job_store, as_user):
 async def test_submit_url_admission_cap(job_store, as_user, monkeypatch):
     """Флуд джобами ограничен per-user cap активных задач."""
     monkeypatch.setattr(server_module, "MAX_ACTIVE_JOBS_PER_USER", 2)
+    server_module._submit_locks.clear()
     monkeypatch.setattr(
         server_module,
         "get_store",
@@ -210,6 +211,32 @@ async def test_submit_url_admission_cap(job_store, as_user, monkeypatch):
 
     with pytest.raises(ToolError, match="too many active jobs"):
         await submit_url("https://youtube.com/watch?v=x")
+
+
+async def test_submit_url_admission_cap_holds_under_concurrency(job_store, as_user, monkeypatch):
+    """TOCTOU: параллельные submit одного токена не обходят cap."""
+    monkeypatch.setattr(server_module, "MAX_ACTIVE_JOBS_PER_USER", 1)
+    server_module._submit_locks.clear()
+    monkeypatch.setattr(
+        server_module,
+        "get_store",
+        lambda: SimpleNamespace(assert_within_limit=AsyncMock()),
+    )
+    monkeypatch.setattr(
+        server_module, "spawn_transcription", lambda u, f, *, task_id=None: (f("t").close(), "t")[1]
+    )
+
+    async def _one():
+        try:
+            await submit_url("https://youtube.com/watch?v=x")
+            return "ok"
+        except ToolError:
+            return "rejected"
+
+    results = await asyncio.gather(_one(), _one())
+
+    assert sorted(results) == ["ok", "rejected"]  # ровно одна прошла
+    assert await job_store.count_active(111) == 1
 
 
 async def test_submit_url_limit_exhausted(job_store, as_user, monkeypatch):

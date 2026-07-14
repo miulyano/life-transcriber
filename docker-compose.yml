@@ -34,6 +34,8 @@ services:
       dockerfile: webapp/Dockerfile
     env_file: .env
     restart: unless-stopped
+    depends_on:
+      - cobalt
     volumes:
       - webapp_tmp:/tmp/transcriber
       - ./bot/data:/app/bot/data:ro

@@ -235,8 +235,11 @@ def sent(monkeypatch):
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
     bot.delete_message = AsyncMock()
     bot.edit_message_text = AsyncMock()
-    monkeypatch.setattr(api_module, "Bot", MagicMock(return_value=bot))
-    monkeypatch.setattr(api_module, "send_transcript_to_chat", send_mock)
+    # The delivery flow lives in webapp.delivery (shared by REST and MCP).
+    import webapp.delivery as delivery_module
+
+    monkeypatch.setattr(delivery_module, "Bot", MagicMock(return_value=bot))
+    monkeypatch.setattr(delivery_module, "send_transcript_to_chat", send_mock)
     return send_mock, bot
 
 

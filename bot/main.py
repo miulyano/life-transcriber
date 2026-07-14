@@ -14,7 +14,7 @@ from aiogram.types import (
 )
 
 from bot.config import settings
-from bot.handlers import callbacks, commands, links, video, voice
+from bot.handlers import callbacks, commands, links, mcp_auth, video, voice
 from bot.middlewares.auth import AuthMiddleware
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
 
@@ -41,6 +41,9 @@ async def main() -> None:
 
     dp.message.middleware(AuthMiddleware())
 
+    # mcp_auth — строго до commands: deep link /start mcpauth_* должен
+    # матчиться раньше общего handle_start.
+    dp.include_router(mcp_auth.router)
     dp.include_router(commands.router)
     dp.include_router(voice.router)
     dp.include_router(video.router)
@@ -52,6 +55,7 @@ async def main() -> None:
             BotCommand(command="start", description="Описание бота"),
             BotCommand(command="help", description="Описание бота"),
             BotCommand(command="limit", description="Остаток лимита транскрибации"),
+            BotCommand(command="mcp", description="Подключение AI-агента и токены"),
         ]
     )
 

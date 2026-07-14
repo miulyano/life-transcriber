@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     TRANSCRIPTS_DB_FILE: str = "data/transcripts.db"
     TRANSCRIPTS_DIR: str = "data/transcripts"
     API_TOKENS: str = ""  # "token1:user_id1,token2:user_id2" — bearer tokens for the REST API
+    # Upload size limits (MB). The real ceiling is the free disk on the
+    # webapp temp volume, NOT AssemblyAI: webapp extracts 16 kHz mono audio
+    # before transcription (~120 MB/hour → ~1.2 GB for a 10-hour recording,
+    # well under AssemblyAI's 2.2 GB /v2/upload cap), so the source file is
+    # bound by disk. Tune to your VPS (see .env.example for guidance).
+    MAX_UPLOAD_MB: int = 4096  # single file (Mini App upload + MCP /api/files)
+    MAX_PENDING_UPLOAD_MB: int = 8192  # total unclaimed MCP uploads per user
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:

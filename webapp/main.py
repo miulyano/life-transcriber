@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
+from glob import glob
 
 import aiofiles
 from aiogram import Bot
@@ -15,15 +16,22 @@ from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 
 from bot.config import settings
+from bot.services.job_store import get_job_store
 from bot.services.media import prepare_audio_for_transcription
 from bot.services.source_meta import SourceMetadata
 from bot.services.task_registry import get_semaphore
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
+from bot.services.token_store import get_token_store
 from bot.services.transcription_pipeline import run_transcription_pipeline
 from bot.services.usage_store import LimitExceededError, format_limit_exceeded_message
 from bot.utils.progress import ProgressReporter
+from fastapi import Depends
+
 from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
+from webapp.deps import resolve_user_id
+from webapp.mcp_auth import MCPBearerAuth
+from webapp.mcp_server import mcp
 from webapp.transcripts_api import router as transcripts_router
 
 logger = logging.getLogger(__name__)
@@ -40,8 +48,23 @@ async def lifespan(_app: FastAPI):
     cleanup_task = asyncio.create_task(
         run_periodic_temp_cleanup(settings.TEMP_DIR, logger=logger)
     )
+    # Only this process executes MCP jobs, so anything queued/running at
+    # startup is guaranteed dead after a restart.
+    stale = await get_job_store().mark_stale_interrupted()
+    if stale:
+        logger.warning("Marked %d stale MCP jobs as interrupted", stale)
+    removed_jobs = await get_job_store().cleanup_old(days=30)
+    removed_requests = await get_token_store().cleanup_old(days=30)
+    if removed_jobs or removed_requests:
+        logger.info(
+            "Housekeeping: removed %d old jobs, %d old auth requests",
+            removed_jobs,
+            removed_requests,
+        )
     try:
-        yield
+        # Streamable HTTP requires a running session manager for /mcp.
+        async with mcp.session_manager.run():
+            yield
     finally:
         cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -49,6 +72,33 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
+
+# Upload endpoints stream to the shared temp volume; anything larger than the
+# per-file cap plus a little multipart overhead is rejected before the body is
+# parsed (Starlette spools file parts to disk otherwise). This is defence in
+# depth — the primary ingress limit belongs in Caddy (request_body max_size,
+# which should be >= MAX_UPLOAD_MB).
+_MULTIPART_OVERHEAD = 16 * 1024 * 1024  # 16 MB for multipart headers/boundaries
+_MAX_REQUEST_BODY_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024 + _MULTIPART_OVERHEAD
+_UPLOAD_PATHS = ("/api/files", "/api/upload")
+
+
+@app.middleware("http")
+async def limit_upload_body(request, call_next):
+    if request.url.path in _UPLOAD_PATHS:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
+            if declared > _MAX_REQUEST_BODY_BYTES:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse({"detail": "Request too large"}, status_code=413)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -217,7 +267,85 @@ async def upload(
     return {"ok": True}
 
 
+MAX_AGENT_UPLOAD_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024  # один файл
+MAX_AGENT_PENDING_BYTES = settings.MAX_PENDING_UPLOAD_MB * 1024 * 1024  # на юзера
+
+# Сериализует загрузки одного пользователя, чтобы per-user quota не
+# обходилась конкурентными запросами (все увидели бы объём до записи).
+# Single-process uvicorn — in-process Lock достаточно.
+_upload_locks: dict[int, asyncio.Lock] = {}
+
+
+def _upload_lock(user_id: int) -> asyncio.Lock:
+    lock = _upload_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _upload_locks[user_id] = lock
+    return lock
+
+
+def _pending_upload_bytes(user_id: int) -> int:
+    """Суммарный размер незабранных загрузок этого пользователя."""
+    total = 0
+    for prefix in (f"mcpfile_{user_id}_", f"mcpclaim_{user_id}_"):
+        for path in glob(os.path.join(settings.TEMP_DIR, f"{prefix}*")):
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                pass
+    return total
+
+
+@app.post("/api/files")
+async def upload_file_for_agent(
+    file: UploadFile, user_id: int = Depends(resolve_user_id)
+) -> dict:
+    """Upload a media file for a later MCP submit_file(file_id) call.
+
+    The user_id embedded in the filename is the ownership check: submit_file
+    globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
+    swept by the periodic temp cleanup (6h TTL). A per-file size cap and a
+    per-user pending-storage quota bound disk use on the shared temp volume;
+    a per-user lock makes the quota hold under concurrent uploads.
+    """
+    os.makedirs(settings.TEMP_DIR, exist_ok=True)
+    file_id = uuid.uuid4().hex
+    safe_name = os.path.basename(file.filename or "upload").replace("/", "_") or "upload"
+    dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{safe_name}")
+
+    async with _upload_lock(user_id):
+        existing = _pending_upload_bytes(user_id)
+        if existing >= MAX_AGENT_PENDING_BYTES:
+            raise HTTPException(
+                413, "Too many pending uploads — submit or wait for them to expire"
+            )
+        bytes_written = 0
+        try:
+            async with aiofiles.open(dest, "wb") as f:
+                while chunk := await file.read(1 << 20):
+                    bytes_written += len(chunk)
+                    if bytes_written > MAX_AGENT_UPLOAD_BYTES:
+                        raise HTTPException(413, "File too large")
+                    if existing + bytes_written > MAX_AGENT_PENDING_BYTES:
+                        raise HTTPException(413, "Pending upload quota exceeded")
+                    await f.write(chunk)
+        except BaseException:
+            # Do not leave a partial/oversized upload on the shared volume.
+            if os.path.exists(dest):
+                os.unlink(dest)
+            raise
+
+    logger.info(
+        "Saved agent file %s (user %s, bytes=%s)", dest, user_id, bytes_written
+    )
+    return {"file_id": file_id}
+
+
 app.include_router(transcripts_router)
+
+# MCP endpoint (streamable-http, stateless). Mounted before the static
+# catchall; bearer identity is injected per-request by MCPBearerAuth.
+app.mount("/mcp", MCPBearerAuth(mcp.streamable_http_app()))
 
 # Static files mount last (catchall -- must be after API routes)
 app.mount(

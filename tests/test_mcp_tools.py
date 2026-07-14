@@ -89,6 +89,16 @@ async def _seed_transcript(store, user_id=111, body="Заголовок\n\nТе�
 # ------------------------------------------------------------- unauthorized
 
 
+def test_tool_annotations_are_real_objects():
+    """Регрессия: `from __future__ import annotations` строкизирует аннотации,
+    и FastMCP падает на issubclass(param.annotation, Context) в старых SDK
+    (1.12.x на VPS). Аннотации тулов должны оставаться реальными объектами."""
+    import inspect
+
+    ann = inspect.signature(request_access).parameters["ctx"].annotation
+    assert not isinstance(ann, str)
+
+
 async def test_tools_require_token(job_store, transcript_store):
     with pytest.raises(ToolError, match="request_access"):
         await submit_url("https://x/v")

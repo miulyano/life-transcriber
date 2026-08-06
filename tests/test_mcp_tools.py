@@ -574,3 +574,18 @@ def test_mcp_endpoint_end_to_end(monkeypatch, tmp_path):
             "resend_to_chat",
             "get_limit",
         } <= names
+
+        # stateless-режим: устаревший/чужой Mcp-Session-Id игнорируется,
+        # реконнект клиента со stale session id не должен давать не-2xx
+        res = client.post(
+            "/mcp/",
+            headers={**MCP_HEADERS, "Mcp-Session-Id": "deadbeef" * 4},
+            json=_rpc("tools/list", id_=5),
+        )
+        assert res.status_code == 200
+
+        # DELETE (явное завершение сессии клиентом) в stateless — 405, не 500
+        res = client.delete(
+            "/mcp/", headers={"Mcp-Session-Id": "deadbeef" * 4}
+        )
+        assert res.status_code == 405

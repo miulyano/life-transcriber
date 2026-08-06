@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.15.1-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.16.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -142,6 +142,7 @@ ALLOWED_USER_IDS=123456789,987654321
 - `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «Транскрибации» (требует shared Caddy на VPS, см. ниже)
 - `MAX_UPLOAD_MB=4096` — потолок размера одного файла (Mini App upload + MCP `/api/files`); упирается в свободный диск, а не в Bot API
 - `MAX_PENDING_UPLOAD_MB=8192` — суммарный объём незабранных MCP-загрузок на пользователя
+- `MAX_DOWNLOAD_MB=4096` — жёсткий потолок размера файла, скачиваемого по ссылке (Яндекс Диск и др.); проверяется по метаданным ДО старта закачки, `0` отключает; свободное место на диске проверяется отдельно в любом случае
 - `API_TOKENS=` — bearer-токены для REST API в формате `token1:user_id1,token2:user_id2`; токен даёт доступ только к генерациям замапленного пользователя
 - `LIMITS_FILE=bot/data/user_limits.json` — per-user месячные лимиты часов транскрибации
 - `USAGE_FILE=data/usage.json` — накопленный расход часов по календарным месяцам (writable volume)

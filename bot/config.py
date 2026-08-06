@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # bound by disk. Tune to your VPS (see .env.example for guidance).
     MAX_UPLOAD_MB: int = 4096  # single file (Mini App upload + MCP /api/files)
     MAX_PENDING_UPLOAD_MB: int = 8192  # total unclaimed MCP uploads per user
+    # Hard cap for files downloaded from links (Yandex Disk etc.), checked
+    # against metadata size BEFORE the download starts. 0 disables the cap;
+    # free disk on TEMP_DIR is checked separately regardless.
+    MAX_DOWNLOAD_MB: int = 4096
 
     @cached_property
     def allowed_user_ids(self) -> list[int]:

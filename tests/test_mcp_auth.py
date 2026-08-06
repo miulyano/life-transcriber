@@ -1,4 +1,6 @@
 """Тесты MCP bearer-auth: ASGI middleware + расширенный резолвер deps."""
+import json
+import sqlite3
 from unittest.mock import AsyncMock
 
 import pytest
@@ -115,6 +117,91 @@ async def test_middleware_resets_contextvar(token_store):
     app = MCPBearerAuth(_App())
     await _call(app, _scope([(b"authorization", f"Bearer {token}".encode())]))
     # вне запроса контекст чист
+    assert current_user_id.get() is None
+
+
+# ----------------------------------------------- error guard (не 500 наружу)
+
+
+class _BoomApp:
+    """Инner-приложение, падающее до отправки ответа."""
+
+    async def __call__(self, scope, receive, send):
+        raise RuntimeError("boom")
+
+
+class _BoomAfterStartApp:
+    """Падает после http.response.start — ответ уже начат."""
+
+    async def __call__(self, scope, receive, send):
+        await send(
+            {"type": "http.response.start", "status": 200, "headers": []}
+        )
+        raise RuntimeError("late boom")
+
+
+def _sent_json_body(sent):
+    body = b"".join(
+        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
+    )
+    return json.loads(body)
+
+
+async def test_middleware_inner_exception_returns_jsonrpc_error(token_store):
+    """Исключение внутри MCP-стека → JSON-RPC error, не сырой 500 uvicorn'а."""
+    app = MCPBearerAuth(_BoomApp())
+
+    sent = await _call(app, _scope([]))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 500
+    payload = _sent_json_body(sent)
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["error"]["code"] == -32603
+
+
+async def test_middleware_auth_resolve_error_returns_jsonrpc_error(monkeypatch):
+    """Сбой SQLite при резолве токена → JSON-RPC error, а не необработанное
+    исключение (наблюдалось как 500 c ExceptionGroup в проде)."""
+
+    async def _fail(token, touch=False):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("webapp.mcp_auth.resolve_bearer_token", _fail)
+    inner = _App()
+    app = MCPBearerAuth(inner)
+
+    sent = await _call(app, _scope([(b"authorization", b"Bearer tok")]))
+
+    assert inner.seen_user_ids == []  # до inner-приложения не дошли
+    assert sent[0]["status"] == 500
+    payload = _sent_json_body(sent)
+    assert payload["error"]["code"] == -32603
+
+
+async def test_middleware_exception_after_response_started_reraises(token_store):
+    """Ответ уже начат — второй http.response.start недопустим, исключение
+    отдаётся наверх (uvicorn закроет соединение)."""
+    app = MCPBearerAuth(_BoomAfterStartApp())
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    with pytest.raises(RuntimeError, match="late boom"):
+        await app(_scope([]), receive, send)
+
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1
+
+
+async def test_middleware_contextvar_reset_after_exception(token_store):
+    app = MCPBearerAuth(_BoomApp())
+    await _call(app, _scope([]))
     assert current_user_id.get() is None
 
 

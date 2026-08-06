@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Необработанные исключения /mcp-стека (резолв bearer-токена в SQLite, транспорт SDK)
+  отдавали клиенту сырой 500 с потерей traceback в docker-логах; теперь — JSON-RPC
+  error с полным логированием, плюс regression-тесты на stale `Mcp-Session-Id`.
+
 ## [1.15.1] – 2026-07-14
 
 ### Fixed

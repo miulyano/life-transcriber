@@ -9,6 +9,7 @@ from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
+from bot.services.download_precheck import ensure_downloadable
 from bot.services.source_meta import SourceMetadata
 from bot.services.stream_download import stream_download_to_file
 from bot.services.user_facing_error import UserFacingError
@@ -202,6 +203,7 @@ async def _download_to_file(
             "yandex-music",
             "не удалось скачать выпуск",
         ),
+        precheck=lambda size: ensure_downloadable(size, output_dir, "yandex-music"),
     )
     return out_path
 

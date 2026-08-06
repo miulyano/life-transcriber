@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import re
@@ -10,6 +11,7 @@ from urllib.parse import urlencode
 
 import aiohttp
 
+from bot.services.download_precheck import ensure_downloadable
 from bot.services.user_facing_error import UserFacingError
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,10 @@ async def download_from_yandex_disk(
     async with aiohttp.ClientSession(timeout=download_timeout) as session:
         meta = await _fetch_meta(session, url)
         _validate_meta(meta)
+        size = meta.get("size")
+        ensure_downloadable(
+            size if isinstance(size, int) else None, output_dir, "yandex-disk"
+        )
         _log_expected_size(meta)
         href = await _fetch_download_href(session, url)
         name = meta.get("name")
@@ -172,6 +178,22 @@ async def _download_to_file(
             "скачивание прервано — возможно, файл слишком большой "
             "или соединение нестабильно, попробуй ещё раз",
         ) from exc
+    except OSError as exc:
+        _cleanup_partial(out_path)
+        if exc.errno == errno.ENOSPC:
+            logger.warning(
+                "yandex-disk: disk full after %.1f MB", bytes_written / (1024 * 1024)
+            )
+            raise UserFacingError(
+                "yandex-disk",
+                "на сервере закончилось место на диске, файл не сохранён",
+            ) from exc
+        raise
+    except BaseException:
+        # Cancellation or any unexpected error — the partial file must not
+        # survive and pile up on the temp volume.
+        _cleanup_partial(out_path)
+        raise
 
 
 def _cleanup_partial(path: str) -> None:

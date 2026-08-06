@@ -142,6 +142,142 @@ async def test_download_from_yandex_disk_missing_href(tmp_path):
             await download_from_yandex_disk(public_key, str(tmp_path))
 
 
+# ---------- size precheck ----------
+
+
+@pytest.mark.asyncio
+async def test_oversize_file_rejected_before_download(tmp_path, monkeypatch):
+    """A file over MAX_DOWNLOAD_MB is rejected from metadata alone — the
+    download href is never requested (only the meta URL is mocked)."""
+    from bot.config import settings
+
+    monkeypatch.setattr(settings, "MAX_DOWNLOAD_MB", 4096)
+    public_key = "https://disk.yandex.ru/d/huge"
+    with aioresponses() as m:
+        m.get(
+            _meta_url(public_key),
+            status=200,
+            payload={
+                "type": "file",
+                "name": "movie.mp4",
+                "media_type": "video",
+                "size": 28 * 1024**3,
+            },
+        )
+        with pytest.raises(RuntimeError, match=r"^yandex-disk:.*слишком большой"):
+            await download_from_yandex_disk(public_key, str(tmp_path))
+    assert os.listdir(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_insufficient_disk_rejected_before_download(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from bot.config import settings
+    from bot.services import download_precheck
+
+    monkeypatch.setattr(settings, "MAX_DOWNLOAD_MB", 0)
+    monkeypatch.setattr(
+        download_precheck.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(total=40 * 1024**3, used=0, free=2 * 1024**3),
+    )
+    public_key = "https://disk.yandex.ru/d/big"
+    with aioresponses() as m:
+        m.get(
+            _meta_url(public_key),
+            status=200,
+            payload={
+                "type": "file",
+                "name": "long.mp4",
+                "media_type": "video",
+                "size": 5 * 1024**3,
+            },
+        )
+        with pytest.raises(RuntimeError, match=r"^yandex-disk:.*не хватит места"):
+            await download_from_yandex_disk(public_key, str(tmp_path))
+    assert os.listdir(tmp_path) == []
+
+
+# ---------- partial file cleanup ----------
+
+
+def _patch_failing_writes(monkeypatch, tmp_path, exc: BaseException) -> None:
+    """Make writes into tmp_path fail with ``exc`` after some bytes land on
+    disk — simulates the disk filling up mid-download."""
+    import builtins
+
+    real_open = builtins.open
+
+    def failing_open(path, mode="r", *args, **kwargs):
+        f = real_open(path, mode, *args, **kwargs)
+        if "wb" not in mode or not str(path).startswith(str(tmp_path)):
+            return f
+
+        class _Exploder:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                f.close()
+                return False
+
+            def write(self, data):
+                f.write(data[:1])  # a real partial byte hits the disk
+                raise exc
+
+        return _Exploder()
+
+    monkeypatch.setattr(builtins, "open", failing_open)
+
+
+def _mock_small_download(m, public_key: str, href: str) -> None:
+    m.get(
+        _meta_url(public_key),
+        status=200,
+        payload={
+            "type": "file",
+            "name": "rec.mp3",
+            "media_type": "audio",
+            "size": 4,
+        },
+    )
+    m.get(_download_url(public_key), status=200, payload={"href": href})
+    m.get(href, status=200, body=b"data")
+
+
+@pytest.mark.asyncio
+async def test_enospc_cleans_partial_file_and_raises_friendly(tmp_path, monkeypatch):
+    """OSError ENOSPC mid-write (the 28.5 GB incident): the partial file must
+    be removed and the user gets a friendly message, not a raw traceback."""
+    import errno
+
+    public_key = "https://disk.yandex.ru/d/enospc"
+    href = "https://downloader.disk.yandex.ru/signed-enospc"
+    _patch_failing_writes(
+        monkeypatch, tmp_path, OSError(errno.ENOSPC, "No space left on device")
+    )
+    with aioresponses() as m:
+        _mock_small_download(m, public_key, href)
+        with pytest.raises(RuntimeError, match=r"^yandex-disk:.*мест"):
+            await download_from_yandex_disk(public_key, str(tmp_path))
+    assert os.listdir(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_unexpected_error_cleans_partial_file(tmp_path, monkeypatch):
+    """Any other exception during the download (here: task cancellation) must
+    also remove the partial file before propagating."""
+    public_key = "https://disk.yandex.ru/d/cancelled"
+    href = "https://downloader.disk.yandex.ru/signed-cancelled"
+    _patch_failing_writes(monkeypatch, tmp_path, asyncio.CancelledError())
+    with aioresponses() as m:
+        _mock_small_download(m, public_key, href)
+        with pytest.raises(asyncio.CancelledError):
+            await download_from_yandex_disk(public_key, str(tmp_path))
+    assert os.listdir(tmp_path) == []
+
+
 # ---------- timeout behavior ----------
 
 

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.15.1-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.15.2-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -69,7 +69,7 @@ Universal-3.5 Pro (с акустической диаризацией спике
 - [aiogram 3.x](https://github.com/aiogram/aiogram) — async Telegram Bot framework
 - [AssemblyAI](https://www.assemblyai.com/) — транскрибация (Universal-3.5 Pro: индустриально-лучшая точность на реальном аудио, 99 языков) + акустическая диаризация спикеров (95 языков включая русский)
 - [OpenAI API](https://platform.openai.com/docs/api-reference) — GPT-4o для заголовков и конспектов
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание с видео-платформ
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — скачивание с видео-платформ (+ [Deno](https://deno.com/) как JS-runtime для YouTube-подписей, бинарь встроен в Docker-образы)
 - [Cobalt](https://github.com/imputnet/cobalt) — скачивание видео из Instagram (self-hosted Docker-sidecar)
 - [FFmpeg](https://ffmpeg.org/) — извлечение аудио из видео
 - [FastAPI](https://fastapi.tiangolo.com/) — веб-сервис для Telegram Mini App (загрузка файлов)

@@ -10,6 +10,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Deno is required by yt-dlp as a JS runtime for YouTube signature solving
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # Install latest yt-dlp separately (updates frequently)
 RUN pip install --no-cache-dir --upgrade yt-dlp
 

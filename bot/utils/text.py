@@ -231,12 +231,16 @@ async def reply_text_or_file(
     d = prepare_transcript(
         text, source_type=source_type, has_timecoded_file=file_text is not None
     )
+    # The source message may be deleted while transcription runs; still deliver.
     if not d.send_as_file:
-        await message.reply(d.body_html, reply_markup=d.keyboard)
+        await message.reply(
+            d.body_html, reply_markup=d.keyboard, allow_sending_without_reply=True
+        )
     else:
         caption = d.caption_html or "Транскрибация готова."
         await message.reply_document(
             BufferedInputFile((file_text or text).encode("utf-8"), filename=d.filename),
             caption=caption,
             reply_markup=d.keyboard,
+            allow_sending_without_reply=True,
         )

@@ -136,6 +136,29 @@ async def test_long_text_sent_as_file():
     message.reply.assert_not_called()
 
 
+async def test_inline_reply_survives_deleted_source_message():
+    # User deleted the link message mid-transcription: Telegram would reject
+    # a strict reply with "message to be replied not found".
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    await reply_text_or_file(message, "x" * 100)
+
+    assert message.reply.await_args.kwargs["allow_sending_without_reply"] is True
+
+
+async def test_file_reply_survives_deleted_source_message():
+    message = MagicMock()
+    message.reply = AsyncMock()
+    message.reply_document = AsyncMock()
+
+    await reply_text_or_file(message, "x" * 3000)
+
+    kwargs = message.reply_document.await_args.kwargs
+    assert kwargs["allow_sending_without_reply"] is True
+
+
 async def test_threshold_boundary_inline():
     """Exactly threshold length should still go inline (≤)."""
     message = MagicMock()

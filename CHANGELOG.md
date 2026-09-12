@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Результат транскрибации терялся с `Bad Request: message to be replied not found`, если исходное сообщение со ссылкой удалили, пока шла обработка. Теперь результат отправляется и без reply на исходник (`allow_sending_without_reply`)
 - Скачивание с YouTube падало с `HTTP Error 403: Forbidden`: yt-dlp теперь требует JS-runtime (deno) для решения подписей YouTube. В образы bot и webapp добавлен бинарь deno (`denoland/deno:bin`)
 
 ## [1.15.1] – 2026-07-14

@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Ссылки на публичные share Frame.io (`https://next.frame.io/share/<id>/view/<id>`): медиа резолвится через share-API без логина, качается только audio-дорожка из HLS через yt-dlp (с прогрессом), новый источник «Frame.io» в футере. Ссылка на папку share, приватный/удалённый asset и файл без транскода дают понятные ошибки
+
 ### Fixed
 
 - Результат транскрибации терялся с `Bad Request: message to be replied not found`, если исходное сообщение со ссылкой удалили, пока шла обработка. Теперь результат отправляется и без reply на исходник (`allow_sending_without_reply`)

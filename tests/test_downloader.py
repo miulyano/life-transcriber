@@ -1,5 +1,6 @@
 """Tests for bot.services.downloader — yt-dlp metadata and progress parsing."""
 import pytest
+from aioresponses import aioresponses
 
 import bot.services.downloader as downloader_module
 from bot.services.downloader import (
@@ -316,3 +317,119 @@ async def test_download_with_ytdlp_kills_process_on_reader_error(monkeypatch, tm
     with pytest.raises(ValueError):
         await downloader_module._download_with_ytdlp("https://x/v", str(tmp_path))
     assert killed["count"] == 1
+
+
+# --- Frame.io dispatch ---
+
+_FRAMEIO_SHARE = "2d11024f-0139-4d05-b9f0-2fc492934855"
+_FRAMEIO_ASSET = "8314ce8c-a0ab-46f5-bbeb-265cd3d18865"
+_FRAMEIO_VIEW_URL = f"https://next.frame.io/share/{_FRAMEIO_SHARE}/view/{_FRAMEIO_ASSET}"
+_FRAMEIO_ROOT_URL = f"https://next.frame.io/share/{_FRAMEIO_SHARE}/"
+
+
+@pytest.mark.asyncio
+async def test_download_audio_frameio_hls_goes_through_ytdlp(monkeypatch):
+    from bot.services.frameio import FrameioMedia
+
+    received = {}
+
+    async def _fake_resolve(url):
+        received["resolved"] = url
+        return FrameioMedia(
+            name="Ruslan_интервью.mp4",
+            hls_manifest="https://sahls.frame.io/x/main.m3u8",
+            original_url="https://assets.frame.io/uploads/x/original.mp4",
+            original_size=1,
+        )
+
+    async def _fake_ytdlp(
+        url, output_dir, proxy=None, on_progress_fraction=None, on_postprocess=None
+    ):
+        received["ytdlp_url"] = url
+        received["on_progress_fraction"] = on_progress_fraction
+        received["on_postprocess"] = on_postprocess
+        return "/tmp/x.m4a", _parse_ytdlp_meta(b'{"title": "main"}')
+
+    async def _no_original(*_a, **_k):
+        raise AssertionError("original download must not run when HLS is available")
+
+    monkeypatch.setattr(downloader_module, "resolve_frameio_media", _fake_resolve)
+    monkeypatch.setattr(downloader_module, "download_frameio_original", _no_original)
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _fake_ytdlp)
+
+    async def _cb(fraction: float) -> None:
+        pass
+
+    async def _pp() -> None:
+        pass
+
+    path, meta = await download_audio(
+        _FRAMEIO_VIEW_URL, "/tmp", on_progress_fraction=_cb, on_postprocess=_pp
+    )
+
+    assert received["resolved"] == _FRAMEIO_VIEW_URL
+    assert received["ytdlp_url"] == "https://sahls.frame.io/x/main.m3u8"
+    assert received["on_progress_fraction"] is _cb
+    assert received["on_postprocess"] is _pp
+    assert path == "/tmp/x.m4a"
+    # yt-dlp's generic "main" title is ignored in favour of the Frame.io filename
+    assert meta.title == "Ruslan_интервью.mp4"
+    assert meta.title_is_filename is True
+
+
+@pytest.mark.asyncio
+async def test_download_audio_frameio_falls_back_to_original(monkeypatch, tmp_path):
+    from bot.services.frameio import FrameioMedia
+
+    raw = tmp_path / "raw.mp4"
+    raw.write_bytes(b"video")
+    received = {}
+
+    async def _fake_resolve(url):
+        return FrameioMedia(
+            name="clip.mp4",
+            hls_manifest=None,
+            original_url="https://assets.frame.io/uploads/x/original.mp4",
+            original_size=5,
+        )
+
+    async def _fake_original(media, output_dir):
+        received["original"] = media.original_url
+        return str(raw)
+
+    async def _fake_extract(video_path, output_dir):
+        received["extract_from"] = video_path
+        return str(tmp_path / "audio.mp3")
+
+    async def _no_ytdlp(*_a, **_k):
+        raise AssertionError("yt-dlp must not run without an HLS manifest")
+
+    monkeypatch.setattr(downloader_module, "resolve_frameio_media", _fake_resolve)
+    monkeypatch.setattr(downloader_module, "download_frameio_original", _fake_original)
+    monkeypatch.setattr(downloader_module, "extract_audio", _fake_extract)
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _no_ytdlp)
+
+    path, meta = await download_audio(_FRAMEIO_VIEW_URL, str(tmp_path))
+
+    assert received["original"] == "https://assets.frame.io/uploads/x/original.mp4"
+    assert received["extract_from"] == str(raw)
+    assert path == str(tmp_path / "audio.mp3")
+    assert meta.title == "clip.mp4"
+    assert meta.title_is_filename is True
+    # the raw download is removed once audio is extracted
+    assert not raw.exists()
+
+
+@pytest.mark.asyncio
+async def test_download_audio_frameio_folder_link_fails_fast(monkeypatch):
+    from bot.services.user_facing_error import UserFacingError
+
+    async def _boom(*_a, **_k):
+        raise AssertionError("no network / yt-dlp call expected for a folder link")
+
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _boom)
+
+    with aioresponses() as m:
+        with pytest.raises(UserFacingError, match=r"^frameio:.*папк"):
+            await download_audio(_FRAMEIO_ROOT_URL, "/tmp")
+        assert not m.requests

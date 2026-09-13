@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.15.3-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.16.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -22,6 +22,7 @@ Universal-3.5 Pro (с акустической диаризацией спике
 - 📸 **Instagram Reels/видео** — публичные ссылки вида `https://www.instagram.com/reel/...` и `/p/...` скачиваются через встроенный [Cobalt](https://github.com/imputnet/cobalt); если Instagram блокирует анонимный доступ с VPS, Cobalt можно запустить с `cookies.json`
 - 📘 **Публичные видео и Reels Facebook** — ссылки `facebook.com/reel/…`, `facebook.com/watch?v=…`, `fb.watch/…` скачиваются через тот же встроенный Cobalt
 - ☁️ **Публичные ссылки на Яндекс Диск** — аудио или видео-файлы вида `https://disk.yandex.ru/d/...` и `https://yadi.sk/d/...` качаются напрямую через публичный Cloud API (авторизация не требуется)
+- 🎬 **Публичные share-ссылки Frame.io** — ссылки вида `https://next.frame.io/share/<id>/view/<id>` на видео или аудио; медиа резолвится через share-API Frame.io без логина, качается только audio-дорожка из HLS (не гигабайтный оригинал). Ссылка на папку share или защищённый паролем share не поддерживается
 - 🎧 **Выпуски подкастов Яндекс Музыки** — ссылки на конкретный выпуск вида `https://music.yandex.ru/album/.../track/...` сначала скачиваются через открытый RSS подкаста, затем через `yt-dlp`; ссылка на весь подкаст не запускает массовую скачку
 - 📤 **Mini App для больших файлов** — кнопка «Транскрибации» в меню бота открывает Telegram WebView, куда можно загрузить аудио или видео крупнее лимита Bot API в 20 MB (потолок задаётся `MAX_UPLOAD_MB`, по умолчанию 4 GB — упирается в свободный диск, не в Bot API). Backend готовит компактное audio-only MP3 перед транскрибацией. Требует HTTPS-домена и настройки shared Caddy на VPS (см. ниже)
 - 📝 **Краткий конспект** — inline-кнопка под транскрибацией, генерирует тезисы через GPT-4o; длинные тексты обрабатываются фрагментами и собираются в единый конспект
@@ -174,6 +175,7 @@ Run polling for bot @YourBotName
 - Отправь **видео** (как файл или пересланное) → получи текст
 - Вставь **ссылку на видео** → получи текст
 - Вставь **публичную ссылку на аудио/видео в Яндекс Диске** → получи текст
+- Вставь **ссылку на видео из публичного share Frame.io** (`next.frame.io/share/…/view/…`) → получи текст
 - Вставь **ссылку на публичный Instagram Reel или видео-пост** → получи текст
 - Вставь **ссылку на публичное видео или Reel из Facebook** (`facebook.com`, `fb.watch`) → получи текст
 - Вставь **ссылку на конкретный выпуск подкаста Яндекс Музыки** (`music.yandex.ru/album/.../track/...`) → получи текст
@@ -485,6 +487,7 @@ life-transcriber/
 │   │   ├── facebook.py          # Facebook Videos/Reels через Cobalt API
 │   │   ├── cobalt_client.py     # Общий клиент для Cobalt API (Instagram/Facebook)
 │   │   ├── yandex_disk.py       # Публичное API Яндекс Диска; раздельные таймауты API/скачивания
+│   │   ├── frameio.py           # Share-API Frame.io (GraphQL по share_id) → HLS-манифест для yt-dlp / fallback на оригинал
 │   │   ├── yandex_music.py      # URL выпусков подкастов Яндекс Музыки
 │   │   ├── ffmpeg_runner.py     # Общий запуск FFmpeg с единым error handling
 │   │   ├── media.py             # Подготовка audio-only MP3 через FFmpeg + probe_duration (ffprobe)
@@ -501,7 +504,7 @@ life-transcriber/
 │   │   ├── temp_cleanup.py      # Периодическая очистка старых файлов из TEMP_DIR
 │   │   ├── user_facing_error.py # Типизированные provider-ошибки без потери старого текста
 │   │   ├── error_messages.py    # Fallback-тексты provider-ошибок (маппинг источник → сообщение)
-│   │   └── downloader.py        # Диспетчер: Яндекс Диск / Instagram / Facebook / Яндекс Музыка / yt-dlp + FFmpeg
+│   │   └── downloader.py        # Диспетчер: Frame.io / Яндекс Диск / Instagram / Facebook / Яндекс Музыка / yt-dlp + FFmpeg
 │   ├── data/
 │   │   ├── word_boost.txt       # доменные термины для AssemblyAI (keyterms_prompt / word_boost, по одному на строку)
 │   │   ├── custom_spelling.json # JSON-карта для пост-замен в тексте

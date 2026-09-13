@@ -13,6 +13,7 @@ SOURCE_LABELS: dict[str, str] = {
     "yandex_music": "Яндекс Музыка",
     "instagram": "Instagram",
     "facebook": "Facebook",
+    "frameio": "Frame.io",
     "link": "Ссылка",
     "voice": "Голосовое",
     "video_note": "Кружок",

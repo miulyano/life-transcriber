@@ -68,6 +68,11 @@ def test_friendly_error_accepts_typed_provider_error():
     assert text == "Не удалось скачать видео"
 
 
+def test_friendly_error_frameio_provider():
+    text = links._friendly_error(UserFacingError("frameio", "ссылка ведёт на папку"))
+    assert text == "Ссылка ведёт на папку"
+
+
 def test_extract_urls_from_plain_text():
     message = make_message(text="первая https://youtu.be/a и вторая https://vk.com/video123 и снова https://youtu.be/a")
     assert extract_urls(message) == ["https://youtu.be/a", "https://vk.com/video123"]

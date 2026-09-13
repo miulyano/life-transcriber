@@ -12,6 +12,11 @@ from typing import Optional
 
 from bot.config import settings
 from bot.services.facebook import download_from_facebook, is_facebook_url
+from bot.services.frameio import (
+    download_frameio_original,
+    is_frameio_url,
+    resolve_frameio_media,
+)
 from bot.utils.fake_progress import FractionCallback, PostprocessCallback
 from bot.services.instagram import download_from_instagram, is_instagram_url
 from bot.services.media import prepare_audio_for_transcription
@@ -59,6 +64,8 @@ def is_youtube_url(url: str) -> bool:
 
 def detect_link_source_type(url: str) -> str:
     """Coarse platform label for a URL; matches the dispatch order of download_audio()."""
+    if is_frameio_url(url):
+        return "frameio"
     if is_yandex_disk_url(url):
         return "yandex_disk"
     if is_instagram_url(url):
@@ -95,6 +102,28 @@ async def download_audio(
     audio track. Other branches (Yandex Disk, Instagram, Facebook) do not
     report progress.
     """
+    if is_frameio_url(url):
+        media = await resolve_frameio_media(url)
+        source_meta = SourceMetadata(title=_clean(media.name), title_is_filename=True)
+        if media.hls_manifest:
+            # The share API hands out an HLS master with an audio-only rendition;
+            # yt-dlp's ``-f bestaudio/best`` picks it, so only audio is fetched
+            # and the fragment-based progress bar works as for any HLS source.
+            # yt-dlp's generic title for a manifest is "main" — ignored.
+            path, _ = await _download_with_ytdlp(
+                media.hls_manifest,
+                output_dir,
+                on_progress_fraction=on_progress_fraction,
+                on_postprocess=on_postprocess,
+            )
+            return path, source_meta
+        raw_path = await download_frameio_original(media, output_dir)
+        try:
+            return await extract_audio(raw_path, output_dir), source_meta
+        finally:
+            if os.path.exists(raw_path):
+                os.unlink(raw_path)
+
     if is_yandex_disk_url(url):
         raw_path, title = await download_from_yandex_disk(url, output_dir)
         try:

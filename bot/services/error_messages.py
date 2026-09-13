@@ -6,6 +6,7 @@ _PROVIDER_FALLBACKS: dict[str, str] = {
     "yandex-disk": "Ошибка Яндекс Диска",
     "yandex-music": "Ошибка Яндекс Музыки",
     "facebook": "Ошибка при обработке Facebook",
+    "frameio": "Ошибка при обработке Frame.io",
 }
 
 

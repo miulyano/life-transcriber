@@ -497,7 +497,8 @@ async def test_download_audio_youtube_age_restricted_retries_with_cookies(
         path, _ = await download_audio("https://youtu.be/abc", "/tmp")
 
     assert path == "/tmp/x.mp3"
-    assert calls == [None, cookies_file]
+    # first attempt anonymous, second with a (temporary copy of the) cookies file
+    assert calls[0] is None and len(calls) == 2 and calls[1]
     assert any("cookies" in r.getMessage() for r in caplog.records)
 
 
@@ -540,3 +541,50 @@ async def test_download_audio_non_youtube_age_error_does_not_use_cookies(monkeyp
     with pytest.raises(RuntimeError):
         await download_audio("https://rutube.ru/video/xyz/", "/tmp")
     assert calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_download_audio_passes_a_temporary_copy_of_cookies(
+    monkeypatch, cookies_file, tmp_path
+):
+    """yt-dlp rewrites the cookie jar on exit, so the (read-only) source file
+    must never be handed to it directly; a per-run copy is used and removed."""
+    import os
+
+    seen = {}
+
+    async def _fake_ytdlp(url, output_dir, proxy=None, cookies_file=None, **_kw):
+        if cookies_file is None:
+            raise RuntimeError(_AGE_ERROR)
+        seen["path"] = cookies_file
+        seen["content"] = open(cookies_file).read()
+        return "/tmp/x.mp3", _parse_ytdlp_meta(b"")
+
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _fake_ytdlp)
+
+    await download_audio("https://www.youtube.com/watch?v=abc", str(tmp_path))
+
+    assert seen["path"] != cookies_file
+    assert seen["content"] == open(cookies_file).read()
+    assert not os.path.exists(seen["path"])
+
+
+@pytest.mark.asyncio
+async def test_download_audio_removes_cookies_copy_on_failure(
+    monkeypatch, cookies_file, tmp_path
+):
+    import os
+
+    seen = {}
+
+    async def _fake_ytdlp(url, output_dir, proxy=None, cookies_file=None, **_kw):
+        if cookies_file:
+            seen["path"] = cookies_file
+            raise RuntimeError("yt-dlp failed (code 1): boom")
+        raise RuntimeError(_AGE_ERROR)
+
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _fake_ytdlp)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await download_audio("https://www.youtube.com/watch?v=abc", str(tmp_path))
+    assert not os.path.exists(seen["path"])

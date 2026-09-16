@@ -14,7 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
 # Install latest yt-dlp separately (updates frequently)
-RUN pip install --no-cache-dir --upgrade yt-dlp
+# [default] pulls in yt-dlp-ejs: the JS challenge solver scripts that Deno
+# runs; without them YouTube web-client formats are dropped ("Only images").
+RUN pip install --no-cache-dir --upgrade "yt-dlp[default]"
 
 COPY bot/ ./bot/
 

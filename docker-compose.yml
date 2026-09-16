@@ -12,7 +12,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 220m
+          # yt-dlp spawns Deno for YouTube JS challenges (~200 MB RSS);
+          # below ~450m it gets OOM-killed and formats go missing.
+          memory: 512m
 
   cobalt:
     image: ghcr.io/imputnet/cobalt:11
@@ -46,7 +48,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 400m
+          memory: 640m  # uvicorn ~220 MB + Deno for yt-dlp (see bot)
 
 networks:
   caddy_net:

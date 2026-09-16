@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -207,14 +208,23 @@ async def download_audio(
             raise
         logger.info("YouTube asked for age confirmation, retrying with cookies")
 
-    return await _download_with_ytdlp(
-        url,
-        output_dir,
-        proxy=settings.YTDLP_PROXY,
-        cookies_file=cookies_file,
-        on_progress_fraction=on_progress_fraction,
-        on_postprocess=on_postprocess,
-    )
+    # yt-dlp rewrites the cookie jar on exit, so it must never see the source
+    # file (mounted read-only, shared between concurrent downloads).
+    os.makedirs(output_dir, exist_ok=True)
+    cookies_copy = os.path.join(output_dir, f"cookies-{uuid.uuid4().hex}.txt")
+    shutil.copyfile(cookies_file, cookies_copy)
+    try:
+        return await _download_with_ytdlp(
+            url,
+            output_dir,
+            proxy=settings.YTDLP_PROXY,
+            cookies_file=cookies_copy,
+            on_progress_fraction=on_progress_fraction,
+            on_postprocess=on_postprocess,
+        )
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(cookies_copy)
 
 
 _AGE_GATE_MARKER = "Sign in to confirm your age"

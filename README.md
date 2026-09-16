@@ -140,6 +140,7 @@ ALLOWED_USER_IDS=123456789,987654321
 - `INSTAGRAM_COOKIES_PATH=` — опциональный путь к Cobalt-style `cookies.json` внутри bot-контейнера; используется как fallback, если Cobalt возвращает `error.api.fetch.empty`
 - `YTDLP_PROXY=` — опциональный proxy для всех скачиваний через `yt-dlp`
 - `YANDEX_MUSIC_PROXY=` — proxy только для Яндекс Музыки; нужен, если VPS получает HTTP 451 из-за региона
+- `YTDLP_COOKIES_FILE=` — опциональный путь к Netscape-cookies YouTube внутри bot-контейнера; нужен только для видео с возрастным ограничением (см. «YouTube: видео 18+»)
 - `WEBAPP_URL=https://transcriber.example.com` — публичный URL Mini App; если задан, бот ставит кнопку меню «Транскрибации» (требует shared Caddy на VPS, см. ниже)
 - `MAX_UPLOAD_MB=4096` — потолок размера одного файла (Mini App upload + MCP `/api/files`); упирается в свободный диск, а не в Bot API
 - `MAX_PENDING_UPLOAD_MB=8192` — суммарный объём незабранных MCP-загрузок на пользователя
@@ -242,6 +243,34 @@ docker compose up -d cobalt
 можно подключить тот же файл к bot-контейнеру и выставить
 `INSTAGRAM_COOKIES_PATH=/cookies.json`: бот попробует получить `video_versions`
 напрямую через Instagram API.
+
+## YouTube: видео 18+
+
+На видео с возрастным ограничением `yt-dlp` падает с `Sign in to confirm your
+age` — YouTube требует залогиненный аккаунт. Бот умеет подставлять cookies:
+
+1. Заведите **отдельный** Google-аккаунт (YouTube помечает аккаунты, с которых
+   качают через yt-dlp, и может заблокировать основной).
+2. Залогиньтесь в YouTube в браузере под этим аккаунтом, подтвердите возраст,
+   экспортируйте cookies в Netscape-формате (например расширением
+   «Get cookies.txt LOCALLY») в файл `youtube-cookies.txt`.
+3. Положите файл на хост вне репозитория (например `/opt/<your-app>-secrets/`),
+   подключите к bot-контейнеру через `docker-compose.override.yml`:
+
+```yaml
+services:
+  bot:
+    environment:
+      YTDLP_COOKIES_FILE: /youtube-cookies.txt
+    volumes:
+      - /opt/<your-app>-secrets/youtube-cookies.txt:/youtube-cookies.txt:ro
+```
+
+Бот всегда качает без cookies и подставляет их **только** после ошибки
+`Sign in to confirm your age` на YouTube-ссылке — аккаунт не светится на
+публичных видео и не используется для других платформ. Если файл отсутствует,
+пользователь получает сообщение о возрастном ограничении. Cookies живут
+недели–месяцы, после чего их нужно переэкспортировать.
 
 ## Mini App: загрузка файлов без ограничений
 

@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     COBALT_API_URL: str = "http://cobalt:9000"
     INSTAGRAM_COOKIES_PATH: Optional[str] = None
     YTDLP_PROXY: Optional[str] = None
-    # Netscape-format cookies file for yt-dlp; used only for YouTube URLs
-    # (age-restricted / sign-in-gated videos). Missing file is ignored.
+    # Netscape-format cookies file for yt-dlp; sent only as a retry after
+    # YouTube's age-gate error, never on the first attempt. Missing file ignored.
     YTDLP_COOKIES_FILE: Optional[str] = None
     YANDEX_MUSIC_PROXY: Optional[str] = None
     WEBAPP_URL: Optional[str] = None  # https://transcriber.<domain> — enables bot menu button

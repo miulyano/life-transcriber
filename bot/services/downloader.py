@@ -190,36 +190,40 @@ async def download_audio(
                 "недоступна или Яндекс Музыка запросила проверку"
             ) from e
 
-    cookies_file = _youtube_cookies_file(url)
-    if cookies_file:
-        try:
-            return await _download_with_ytdlp(
-                url,
-                output_dir,
-                proxy=settings.YTDLP_PROXY,
-                cookies_file=cookies_file,
-                on_progress_fraction=on_progress_fraction,
-                on_postprocess=on_postprocess,
-            )
-        except RuntimeError as e:
-            # Cookies expire and YouTube flags accounts; a broken cookies file
-            # must not take down ordinary (public) YouTube downloads.
-            logger.warning("yt-dlp with YouTube cookies failed, "
-                           "retrying without cookies: %s", e)
+    try:
+        return await _download_with_ytdlp(
+            url,
+            output_dir,
+            proxy=settings.YTDLP_PROXY,
+            on_progress_fraction=on_progress_fraction,
+            on_postprocess=on_postprocess,
+        )
+    except RuntimeError as e:
+        # Cookies expose a real Google account (YouTube flags accounts used by
+        # yt-dlp), so they are sent only when anonymous access is refused for
+        # age verification — never for videos that work without sign-in.
+        cookies_file = _youtube_cookies_file(url, e)
+        if not cookies_file:
+            raise
+        logger.info("YouTube asked for age confirmation, retrying with cookies")
 
     return await _download_with_ytdlp(
         url,
         output_dir,
         proxy=settings.YTDLP_PROXY,
+        cookies_file=cookies_file,
         on_progress_fraction=on_progress_fraction,
         on_postprocess=on_postprocess,
     )
 
 
-def _youtube_cookies_file(url: str) -> Optional[str]:
-    """Path to the YouTube cookies file if configured, present and applicable."""
+_AGE_GATE_MARKER = "Sign in to confirm your age"
+
+
+def _youtube_cookies_file(url: str, error: Exception) -> Optional[str]:
+    """Cookies path if the failure is a YouTube age gate and a file is configured."""
     path = settings.YTDLP_COOKIES_FILE
-    if not path or not is_youtube_url(url):
+    if not path or not is_youtube_url(url) or _AGE_GATE_MARKER not in str(error):
         return None
     if not os.path.isfile(path):
         logger.warning("YTDLP_COOKIES_FILE is set but not found: %s", path)

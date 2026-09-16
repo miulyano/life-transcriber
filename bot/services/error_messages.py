@@ -23,6 +23,11 @@ def format_download_error(error: "Exception | str") -> str:
             return (detail[:1].upper() + detail[1:]) if detail else fallback
 
     if "yt-dlp" in error_msg:
+        if "Sign in to confirm your age" in error_msg:
+            return (
+                "Видео с возрастным ограничением: YouTube требует войти в аккаунт, "
+                "поэтому скачать его не получится."
+            )
         return "Не удалось скачать видео с этой платформы. Попробуй другую ссылку."
 
     return f"Ошибка: {error_msg}"

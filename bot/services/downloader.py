@@ -190,6 +190,23 @@ async def download_audio(
                 "недоступна или Яндекс Музыка запросила проверку"
             ) from e
 
+    cookies_file = _youtube_cookies_file(url)
+    if cookies_file:
+        try:
+            return await _download_with_ytdlp(
+                url,
+                output_dir,
+                proxy=settings.YTDLP_PROXY,
+                cookies_file=cookies_file,
+                on_progress_fraction=on_progress_fraction,
+                on_postprocess=on_postprocess,
+            )
+        except RuntimeError as e:
+            # Cookies expire and YouTube flags accounts; a broken cookies file
+            # must not take down ordinary (public) YouTube downloads.
+            logger.warning("yt-dlp with YouTube cookies failed, "
+                           "retrying without cookies: %s", e)
+
     return await _download_with_ytdlp(
         url,
         output_dir,
@@ -197,6 +214,17 @@ async def download_audio(
         on_progress_fraction=on_progress_fraction,
         on_postprocess=on_postprocess,
     )
+
+
+def _youtube_cookies_file(url: str) -> Optional[str]:
+    """Path to the YouTube cookies file if configured, present and applicable."""
+    path = settings.YTDLP_COOKIES_FILE
+    if not path or not is_youtube_url(url):
+        return None
+    if not os.path.isfile(path):
+        logger.warning("YTDLP_COOKIES_FILE is set but not found: %s", path)
+        return None
+    return path
 
 
 def parse_progress_line(line: str) -> Optional[float]:
@@ -255,7 +283,12 @@ def _parse_ytdlp_meta(stdout: bytes) -> SourceMetadata:
     )
 
 
-def _build_ytdlp_cmd(url: str, out_path: str, proxy: Optional[str]) -> list[str]:
+def _build_ytdlp_cmd(
+    url: str,
+    out_path: str,
+    proxy: Optional[str],
+    cookies_file: Optional[str] = None,
+) -> list[str]:
     """Assemble the yt-dlp argument list (kept pure so it can be unit-tested).
 
     ``-f bestaudio/best`` prefers an audio-only stream; ``--extract-audio
@@ -283,6 +316,8 @@ def _build_ytdlp_cmd(url: str, out_path: str, proxy: Optional[str]) -> list[str]
     ]
     if proxy:
         cmd.extend(["--proxy", proxy])
+    if cookies_file:
+        cmd.extend(["--cookies", cookies_file])
     cmd.append(url)
     return cmd
 
@@ -329,13 +364,14 @@ async def _download_with_ytdlp(
     url: str,
     output_dir: str,
     proxy: Optional[str] = None,
+    cookies_file: Optional[str] = None,
     on_progress_fraction: Optional[FractionCallback] = None,
     on_postprocess: Optional[PostprocessCallback] = None,
 ) -> tuple[str, SourceMetadata]:
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{uuid.uuid4().hex}.%(ext)s")
 
-    cmd = _build_ytdlp_cmd(url, out_path, proxy)
+    cmd = _build_ytdlp_cmd(url, out_path, proxy, cookies_file)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

@@ -433,3 +433,85 @@ async def test_download_audio_frameio_folder_link_fails_fast(monkeypatch):
         with pytest.raises(UserFacingError, match=r"^frameio:.*папк"):
             await download_audio(_FRAMEIO_ROOT_URL, "/tmp")
         assert not m.requests
+
+
+# ---------- YouTube cookies ----------
+
+def test_ytdlp_cmd_adds_cookies_when_given():
+    without = _build_ytdlp_cmd("https://x/v", "/tmp/out.%(ext)s", None)
+    assert "--cookies" not in without
+
+    withc = _build_ytdlp_cmd(
+        "https://x/v", "/tmp/out.%(ext)s", None, cookies_file="/secrets/yt.txt"
+    )
+    assert withc[withc.index("--cookies") + 1] == "/secrets/yt.txt"
+    assert withc[-1] == "https://x/v"
+
+
+def _capture_ytdlp(calls):
+    async def _fake_ytdlp(url, output_dir, proxy=None, cookies_file=None, **_kw):
+        calls.append(cookies_file)
+        return "/tmp/x.mp3", _parse_ytdlp_meta(b"")
+    return _fake_ytdlp
+
+
+@pytest.mark.asyncio
+async def test_download_audio_youtube_uses_cookies_file(monkeypatch, tmp_path):
+    cookies = tmp_path / "yt.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n")
+    monkeypatch.setattr(downloader_module.settings, "YTDLP_COOKIES_FILE", str(cookies))
+    calls = []
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _capture_ytdlp(calls))
+
+    await download_audio("https://www.youtube.com/watch?v=abc", "/tmp")
+    assert calls == [str(cookies)]
+
+
+@pytest.mark.asyncio
+async def test_download_audio_non_youtube_ignores_cookies_file(monkeypatch, tmp_path):
+    cookies = tmp_path / "yt.txt"
+    cookies.write_text("")
+    monkeypatch.setattr(downloader_module.settings, "YTDLP_COOKIES_FILE", str(cookies))
+    calls = []
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _capture_ytdlp(calls))
+
+    await download_audio("https://rutube.ru/video/xyz/", "/tmp")
+    assert calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_download_audio_youtube_skips_missing_cookies_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        downloader_module.settings, "YTDLP_COOKIES_FILE", str(tmp_path / "absent.txt")
+    )
+    calls = []
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _capture_ytdlp(calls))
+
+    await download_audio("https://youtu.be/abc", "/tmp")
+    assert calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_download_audio_youtube_retries_without_cookies(monkeypatch, tmp_path, caplog):
+    """Expired/banned cookies must not break ordinary YouTube downloads."""
+    import logging
+
+    cookies = tmp_path / "yt.txt"
+    cookies.write_text("")
+    monkeypatch.setattr(downloader_module.settings, "YTDLP_COOKIES_FILE", str(cookies))
+    calls = []
+
+    async def _fake_ytdlp(url, output_dir, proxy=None, cookies_file=None, **_kw):
+        calls.append(cookies_file)
+        if cookies_file:
+            raise RuntimeError("yt-dlp failed (code 1): ERROR: cookies are no longer valid")
+        return "/tmp/x.mp3", _parse_ytdlp_meta(b"")
+
+    monkeypatch.setattr(downloader_module, "_download_with_ytdlp", _fake_ytdlp)
+
+    with caplog.at_level(logging.WARNING, logger="bot.services.downloader"):
+        path, _ = await download_audio("https://www.youtube.com/watch?v=abc", "/tmp")
+
+    assert path == "/tmp/x.mp3"
+    assert calls == [str(cookies), None]
+    assert any("cookies" in r.getMessage() for r in caplog.records)

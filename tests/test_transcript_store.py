@@ -191,3 +191,22 @@ async def test_delete_survives_missing_file(store):
 @pytest.mark.asyncio
 async def test_delete_missing_id_returns_false(store):
     assert await store.delete("nope", 111) is False
+
+
+@pytest.mark.asyncio
+async def test_update_body_rewrites_file_and_char_count(store):
+    record = await store.save(
+        111,
+        title="Тест",
+        source_type="voice",
+        duration_sec=1.0,
+        body="старое тело",
+        segments=_segments(),
+    )
+
+    updated = await store.update_body(record, "новое, более длинное тело")
+
+    assert await store.read_text(record) == "новое, более длинное тело"
+    assert updated.char_count == len("новое, более длинное тело")
+    assert updated.id == record.id
+    assert (await store.get(record.id, 111)).char_count == updated.char_count

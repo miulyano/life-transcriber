@@ -384,14 +384,113 @@ async def test_analyze_transcript_returns_empty_on_api_error(monkeypatch):
 # ---------- split_into_paragraphs ----------
 
 
+def _squash(text: str) -> str:
+    return "".join(text.split())
+
+
+def _breaks(*indices: int):
+    return _response(json.dumps({"breaks": list(indices)}))
+
+
+def test_split_sentences_cuts_after_terminators_and_closing_quotes():
+    text = 'Первое предложение. Второе «в кавычках». Третье! Четвёртое? Пятое… Шестое (в скобках).'
+    assert formatter.split_sentences(text) == [
+        "Первое предложение.",
+        "Второе «в кавычках».",
+        "Третье!",
+        "Четвёртое?",
+        "Пятое…",
+        "Шестое (в скобках).",
+    ]
+
+
+def test_split_sentences_without_terminators_is_one_sentence():
+    assert formatter.split_sentences("раз два\nтри") == ["раз два три"]
+
+
+def test_split_sentences_never_changes_words():
+    text = "Слово.Слитно тут. Ещё 3.5 числа. Конец"
+    assert _squash(" ".join(formatter.split_sentences(text))) == _squash(text)
+
+
 @pytest.mark.asyncio
-async def test_split_into_paragraphs_returns_result_from_gpt(monkeypatch):
-    paragraphed = "Первый абзац.\n\nВторой абзац."
-    create = AsyncMock(return_value=_response(paragraphed))
+async def test_split_into_paragraphs_builds_paragraphs_from_breaks(monkeypatch):
+    create = AsyncMock(return_value=_breaks(3))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
-    result = await formatter.split_into_paragraphs("Первый абзац. Второй абзац.")
-    assert result == paragraphed
+    result = await formatter.split_into_paragraphs("Раз. Два. Три. Четыре.")
+    assert result == "Раз. Два.\n\nТри. Четыре."
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_sends_numbered_sentences_in_json_mode(monkeypatch):
+    create = AsyncMock(return_value=_breaks(2))
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    await formatter.split_into_paragraphs("Раз. Два. Три.")
+
+    kwargs = create.await_args.kwargs
+    user_msg = kwargs["messages"][1]["content"]
+    assert "1. Раз." in user_msg
+    assert "2. Два." in user_msg
+    assert "3. Три." in user_msg
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_keeps_text_when_gpt_returns_prose(monkeypatch):
+    """Regression: GPT answered with a rewritten summary instead of paragraph
+    indices — the old code shipped that summary as the transcript and lost
+    half the lecture. The text must survive untouched."""
+    create = AsyncMock(return_value=_response("Джорджия О'Кифф была в шоке. Таким образом…"))
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    text = "Раз. Два. Три. Четыре."
+    assert await formatter.split_into_paragraphs(text) == text
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_ignores_invalid_break_indices(monkeypatch):
+    create = AsyncMock(
+        return_value=_response(json.dumps({"breaks": [0, 1, 99, "x", True, "3", 3]}))
+    )
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    result = await formatter.split_into_paragraphs("Раз. Два. Три. Четыре.")
+    assert result == "Раз. Два.\n\nТри. Четыре."
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_all_breaks_invalid_returns_chunk(monkeypatch):
+    create = AsyncMock(return_value=_breaks(1, 99))
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    text = "Раз. Два. Три."
+    assert await formatter.split_into_paragraphs(text) == text
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_skips_gpt_for_single_sentence(monkeypatch):
+    create = AsyncMock()
+    monkeypatch.setattr(formatter.client.chat.completions, "create", create)
+
+    text = "одно длинное предложение без знаков конца которое нельзя делить"
+    assert await formatter.split_into_paragraphs(text) == text
+    create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_split_into_paragraphs_guard_rejects_chunk_that_changes_words(monkeypatch):
+    """Belt and braces: even if a chunk splitter returns altered text, the
+    caller must never deliver it — original text wins."""
+
+    async def _bad_chunk(chunk: str) -> str:
+        return "совсем другой текст."
+
+    monkeypatch.setattr(formatter, "_split_chunk", _bad_chunk)
+
+    text = "Раз. Два. Три."
+    assert await formatter.split_into_paragraphs(text) == text
 
 
 @pytest.mark.asyncio
@@ -406,8 +505,9 @@ async def test_split_into_paragraphs_returns_original_on_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_split_into_paragraphs_processes_all_chunks_for_long_text(monkeypatch):
-    """Every chunk of a long text must be sent to GPT — nothing dropped."""
-    create = AsyncMock(side_effect=[_response("Часть 1."), _response("Часть 2.")])
+    """Every chunk of a long text must be sent to GPT — nothing dropped,
+    nothing altered; every chunk gets its paragraph break."""
+    create = AsyncMock(return_value=_breaks(2))
     monkeypatch.setattr(formatter.client.chat.completions, "create", create)
 
     # Text with sentence boundaries, longer than PARA_SPLIT_MAX_INPUT
@@ -415,8 +515,8 @@ async def test_split_into_paragraphs_processes_all_chunks_for_long_text(monkeypa
     result = await formatter.split_into_paragraphs(sentence)
 
     assert create.await_count >= 2
-    assert "Часть 1." in result
-    assert "Часть 2." in result
+    assert result.count("\n\n") >= create.await_count
+    assert _squash(result) == _squash(sentence)
 
 
 @pytest.mark.asyncio
@@ -481,3 +581,31 @@ async def test_split_into_paragraphs_empty_returns_unchanged(monkeypatch):
     assert await formatter.split_into_paragraphs("") == ""
     assert await formatter.split_into_paragraphs("   ") == "   "
     create.assert_not_awaited()
+
+
+# ---------- render_segments_plain ----------
+
+
+def test_render_segments_plain_mono_joins_sentences_into_one_block():
+    segments = [
+        formatter.TimecodeSegment(0, "Раз два."),
+        formatter.TimecodeSegment(1000, "Три."),
+        formatter.TimecodeSegment(2000, "  "),
+    ]
+    assert formatter.render_segments_plain(segments) == "Раз два. Три."
+
+
+def test_render_segments_plain_multi_one_block_per_speaker_turn():
+    segments = [
+        formatter.TimecodeSegment(0, "Раз.", "Иван"),
+        formatter.TimecodeSegment(1000, "Два.", "Иван"),
+        formatter.TimecodeSegment(2000, "Три.", "Спикер 2"),
+        formatter.TimecodeSegment(3000, "Четыре.", "Иван"),
+    ]
+    assert formatter.render_segments_plain(segments) == (
+        "Иван: Раз. Два.\n\nСпикер 2: Три.\n\nИван: Четыре."
+    )
+
+
+def test_render_segments_plain_empty():
+    assert formatter.render_segments_plain([]) == ""

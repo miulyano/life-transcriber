@@ -17,7 +17,7 @@ import os
 import sqlite3
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -232,6 +232,24 @@ class TranscriptStore:
                 except OSError as e:
                     logger.warning("Failed to remove transcript file %s: %s", path, e)
             return True
+
+        return await asyncio.to_thread(_run)
+
+    async def update_body(self, record: TranscriptRecord, body: str) -> TranscriptRecord:
+        """Replace the stored body (``.txt``) and refresh ``char_count``.
+
+        Segments and metadata are untouched — used to rebuild a body from
+        persisted segments after a formatting failure.
+        """
+
+        def _run() -> TranscriptRecord:
+            _atomic_write(record.txt_path, body)
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE transcripts SET char_count=? WHERE id=? AND user_id=?",
+                    (len(body), record.id, record.user_id),
+                )
+            return replace(record, char_count=len(body))
 
         return await asyncio.to_thread(_run)
 

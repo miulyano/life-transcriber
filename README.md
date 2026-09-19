@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.16.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.16.1-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -510,6 +510,7 @@ life-transcriber/
 │   │   ├── transcriber.py       # AssemblyAI Universal-3.5 Pro: транскрибация + диаризация → FormattedTranscript (title + uploader)
 │   │   ├── source_meta.py       # SourceMetadata: title/uploader источника + title_is_filename (имя файла — hint для GPT, не заголовок)
 │   │   ├── formatter.py         # render_with_speakers (A/B → Спикер 1/2) + analyze_transcript: title/speakers через GPT-4o (GPT-title используется, если source_meta.title — хэш или имя файла)
+│   │   │                        #   + split_into_paragraphs: GPT выбирает только границы абзацев между предложениями, текст не переписывает
 │   │   ├── summarizer.py        # OpenAI GPT-4o → конспект, chunking длинных текстов
 │   │   ├── prompts.py           # System-промпты для GPT-4o (summarizer + formatter)
 │   │   ├── instagram.py         # Instagram Reels через Cobalt API
@@ -524,6 +525,7 @@ life-transcriber/
 │   │   ├── word_boost.py        # load_word_boost / load_custom_spelling / apply_custom_spelling
 │   │   ├── transcription_pipeline.py # Общий flow: резерв лимита → transcribe → списание → сохранение → deliver
 │   │   ├── transcript_store.py  # Персистентное хранилище генераций: SQLite + .txt/.json файлы
+│   │   ├── transcript_rebuild.py # Пересборка тела транскрипта из сохранённых сегментов (ремонт без повторной транскрибации)
 │   │   ├── token_store.py       # MCP-токены агентов (sha256) + pairing-запросы авторизации
 │   │   ├── job_store.py         # Персистентные MCP-джобы со статусами для опроса агентом
 │   │   ├── derived_texts.py     # Композиция доставки конспекта/очистки (бот и MCP)
@@ -540,6 +542,7 @@ life-transcriber/
 │   │   ├── user_limits.example.json # Пример формата лимитов часов
 │   │   └── user_limits.json     # (gitignored) per-user лимиты часов в месяц
 │   ├── middlewares/auth.py      # Whitelist Telegram user ID
+│   ├── tools/rebuild_transcript.py # CLI: audit (короткие тела) / rebuild <record_id> из сегментов
 │   └── utils/
 │       ├── text.py              # reply_text_or_file + кэш хэшей с TTL 10 мин
 │       ├── text_chunking.py     # split_long_text: общий чанкер для summarizer/formatter

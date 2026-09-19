@@ -267,24 +267,92 @@ async def analyze_transcript(
         return "", {}
 
 
+def split_sentences(text: str) -> list[str]:
+    """Cut ``text`` into sentences on whitespace after a terminator word.
+
+    Whitespace-only tokenisation — the words themselves are never altered, so
+    ``"".join(result).split()`` always equals the input without whitespace.
+    Uses the same terminator rule as ``build_timecode_segments``.
+    """
+    sentences: list[str] = []
+    cur: list[str] = []
+    for word in text.split():
+        cur.append(word)
+        if _SENT_END_RE.search(word):
+            sentences.append(" ".join(cur))
+            cur = []
+    if cur:
+        sentences.append(" ".join(cur))
+    return sentences
+
+
+def _squash(text: str) -> str:
+    return "".join(text.split())
+
+
+def _sanitize_breaks(raw: object, sentence_count: int) -> list[int]:
+    """Keep only valid 1-based sentence indices in (1, sentence_count]."""
+    if not isinstance(raw, list):
+        return []
+    out: set[int] = set()
+    for value in raw:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, str) and value.strip().isdigit():
+            value = int(value.strip())
+        if isinstance(value, int) and 1 < value <= sentence_count:
+            out.add(value)
+    return sorted(out)
+
+
+def _assemble_paragraphs(sentences: list[str], breaks: list[int]) -> str:
+    paragraphs: list[str] = []
+    start = 0
+    for b in breaks:
+        paragraphs.append(" ".join(sentences[start : b - 1]))
+        start = b - 1
+    paragraphs.append(" ".join(sentences[start:]))
+    return "\n\n".join(paragraphs)
+
+
 async def _split_chunk(chunk: str) -> str:
-    """GPT paragraph split for a single chunk. Returns chunk unchanged on failure."""
-    # Output ≈ same size as input; Russian ~3 chars/token, +20% headroom.
-    max_tokens = min(16384, int(len(chunk) / 3 * 1.2) + 200)
+    """Paragraph split for a single chunk. Returns chunk unchanged on failure.
+
+    GPT never rewrites the text: it receives the numbered sentences and
+    returns only the indices where a new paragraph starts. Paragraphs are
+    then assembled from the original sentences, so words cannot be lost or
+    invented (a rewrite-based prompt once shipped a GPT summary instead of
+    half a lecture).
+    """
+    sentences = split_sentences(chunk)
+    if len(sentences) < 2:
+        return chunk
+    numbered = "\n".join(f"{i}. {s}" for i, s in enumerate(sentences, 1))
     try:
         response = await client.chat.completions.create(
             model=settings.GPT_MODEL,
             messages=[
                 {"role": "system", "content": PARAGRAPH_SPLIT_SYSTEM_PROMPT},
-                {"role": "user", "content": chunk},
+                {"role": "user", "content": numbered},
             ],
             temperature=0.0,
-            max_tokens=max_tokens,
+            max_tokens=min(4000, 50 + 6 * len(sentences)),
+            response_format={"type": "json_object"},
         )
-        return (response.choices[0].message.content or "").strip() or chunk
+        data = json.loads(response.choices[0].message.content or "{}")
+        raw_breaks = data.get("breaks", []) if isinstance(data, dict) else []
     except Exception:
         logger.warning("_split_chunk failed", exc_info=True)
         return chunk
+    breaks = _sanitize_breaks(raw_breaks, len(sentences))
+    if not breaks:
+        logger.warning(
+            "_split_chunk: no usable paragraph breaks for %d sentences (got %r)",
+            len(sentences),
+            raw_breaks,
+        )
+        return chunk
+    return _assemble_paragraphs(sentences, breaks)
 
 
 async def split_into_paragraphs(
@@ -293,8 +361,10 @@ async def split_into_paragraphs(
 ) -> str:
     """Split single-speaker solid text into semantic paragraphs via GPT.
 
-    Long texts are processed chunk-by-chunk so the entire text is formatted,
-    not just the first PARA_SPLIT_MAX_INPUT characters.
+    GPT only picks break positions between sentences (see ``_split_chunk``);
+    the words are always the original ones.  Long texts are processed
+    chunk-by-chunk so the entire text is formatted, not just the first
+    PARA_SPLIT_MAX_INPUT characters.
     ``on_progress(done, total)`` is reported per chunk, but only when there
     is more than one chunk — a 1/1 counter carries no information.
     Returns the original text unchanged on any failure.
@@ -319,4 +389,45 @@ async def split_into_paragraphs(
         await _emit(i)
         results.append(await _split_chunk(chunk))
     await _emit(len(chunks))
-    return "\n\n".join(results)
+    joined = "\n\n".join(results)
+    # Invariant: paragraph splitting may only move whitespace. Anything else
+    # means text was lost or invented — deliver the original instead.
+    if _squash(joined) != _squash(text):
+        logger.error(
+            "split_into_paragraphs altered the text (%d vs %d non-space chars); "
+            "returning original",
+            len(_squash(joined)),
+            len(_squash(text)),
+        )
+        return text
+    return joined
+
+
+def render_segments_plain(segments: list[TimecodeSegment]) -> str:
+    """Body text without stamps, rebuilt from persisted segments.
+
+    Mono (``speaker`` is None): one solid block of sentences — the caller
+    decides whether to run ``split_into_paragraphs``.  Multi-speaker: one
+    ``«Имя: …»`` block per speaker turn, blank line between turns — the same
+    shape ``render_with_speakers`` produces from utterances.
+    """
+    if not segments:
+        return ""
+    multi = any(s.speaker is not None for s in segments)
+    if not multi:
+        return " ".join(s.text.strip() for s in segments if s.text.strip())
+    blocks: list[str] = []
+    cur_speaker: Optional[str] = None
+    cur: list[str] = []
+    for seg in segments:
+        text = seg.text.strip()
+        if not text:
+            continue
+        if cur and seg.speaker != cur_speaker:
+            blocks.append(f"{cur_speaker}: {' '.join(cur)}")
+            cur = []
+        cur_speaker = seg.speaker
+        cur.append(text)
+    if cur:
+        blocks.append(f"{cur_speaker}: {' '.join(cur)}")
+    return "\n\n".join(blocks)

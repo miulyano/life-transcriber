@@ -21,7 +21,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from bot.config import settings
 from bot.services.job_store import get_job_store
-from bot.services.media import prepare_audio_for_transcription
+from bot.services.media import (
+    estimate_transcription_audio_bytes,
+    prepare_audio_for_transcription,
+    probe_duration,
+)
 from bot.services.source_meta import SourceMetadata
 from bot.services.task_registry import get_semaphore
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
@@ -316,43 +320,71 @@ def _free_disk_bytes(path: str) -> int:
 _reserved_upload_bytes = 0
 
 
-def _reserve_disk(declared_bytes: int):
-    """Резервирует место под загрузку (источник + будущий mp3) или бросает 507.
-
-    Возвращает ``release(amount=None)``: без аргумента снимает весь остаток
-    резерва, с аргументом — часть (источник уже лежит на диске и учтён в
-    free, а резерв под mp3 держится до конца job'а). Идемпотентно.
-    """
-    global _reserved_upload_bytes
-    need = declared_bytes * 2
+def _disk_fits(extra_bytes: int) -> bool:
+    """Влезут ли ещё extra_bytes сверх уже зарезервированного + headroom."""
     try:
         free = _free_disk_bytes(settings.TEMP_DIR)
     except OSError:
-        free = None
-    if free is not None and _reserved_upload_bytes + need + DISK_HEADROOM_BYTES > free:
-        raise HTTPException(507, "Not enough free disk space on the server for this file")
-    _reserved_upload_bytes += need
-    remaining = need
+        return True
+    return _reserved_upload_bytes + extra_bytes + DISK_HEADROOM_BYTES <= free
 
-    def _release(amount: Optional[int] = None) -> None:
-        nonlocal remaining
+
+class _DiskReservation:
+    """Резерв места под одну загрузку: источник во время стрима + будущий mp3.
+
+    ``release(amount=None)`` снимает остаток (или часть); ``resize(target)``
+    меняет остаток под уточнённую оценку mp3 (рост — через повторный
+    disk-check, иначе 507). Идемпотентно, счётчик не уходит в минус.
+    """
+
+    def __init__(self, declared_bytes: int) -> None:
         global _reserved_upload_bytes
-        part = remaining if amount is None else min(amount, remaining)
-        remaining -= part
+        # Пока стримим, длительность неизвестна — держим 2× размера источника
+        # как верхнюю границу (источник + mp3), уточняем после ffprobe.
+        need = declared_bytes * 2
+        if not _disk_fits(need):
+            raise HTTPException(
+                507, "Not enough free disk space on the server for this file"
+            )
+        _reserved_upload_bytes += need
+        self.remaining = need
+
+    def release(self, amount: Optional[int] = None) -> None:
+        global _reserved_upload_bytes
+        part = self.remaining if amount is None else min(amount, self.remaining)
+        self.remaining -= part
         _reserved_upload_bytes -= part
 
-    return _release
+    __call__ = release
+
+    def resize(self, target: int) -> None:
+        global _reserved_upload_bytes
+        if target <= self.remaining:
+            self.release(self.remaining - target)
+            return
+        grow = target - self.remaining
+        if not _disk_fits(grow):
+            raise HTTPException(
+                507, "Not enough free disk space on the server for the extracted audio"
+            )
+        _reserved_upload_bytes += grow
+        self.remaining = target
+
+
+def _reserve_disk(declared_bytes: int) -> _DiskReservation:
+    """Резервирует место под загрузку или бросает 507."""
+    return _DiskReservation(declared_bytes)
 
 
 async def _store_agent_upload(
     user_id: int, filename: str, chunks: AsyncIterator[bytes]
-) -> tuple[str, int]:
+) -> tuple[str, int, str]:
     """Записать поток в TEMP_DIR/mcpfile_<user>_<file_id>_<filename>.
 
     Общее ядро POST /api/files и PUT /api/uploads. Per-file cap и per-user
     pending-quota ограничивают диск на общем temp-volume; per-user lock
     держит квоту под конкурентными загрузками. Частичный файл при любой
-    ошибке удаляется. Возвращает (file_id, bytes_written).
+    ошибке удаляется. Возвращает (file_id, bytes_written, dest).
     """
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
     file_id = uuid.uuid4().hex
@@ -385,7 +417,7 @@ async def _store_agent_upload(
     logger.info(
         "Saved agent file %s (user %s, bytes=%s)", dest, user_id, bytes_written
     )
-    return file_id, bytes_written
+    return file_id, bytes_written, dest
 
 
 async def _upload_file_chunks(file: UploadFile) -> AsyncIterator[bytes]:
@@ -404,7 +436,7 @@ async def upload_file_for_agent(
     swept by the periodic temp cleanup (6h TTL).
     """
     safe_name = sanitize_upload_filename(file.filename)
-    file_id, _ = await _store_agent_upload(user_id, safe_name, _upload_file_chunks(file))
+    file_id, _, _ = await _store_agent_upload(user_id, safe_name, _upload_file_chunks(file))
     return {"file_id": file_id}
 
 
@@ -437,18 +469,37 @@ async def upload_with_ticket(request: Request):
         await store.release_upload_ticket(ticket.id)
         raise
     try:
-        file_id, _ = await _store_agent_upload(
+        file_id, _, dest = await _store_agent_upload(
             ticket.user_id, ticket.filename, request.stream()
         )
     except BaseException:
         release_disk()
         await store.release_upload_ticket(ticket.id)
         raise
-    # Источник записан — free уже его учитывает; держим только долю под mp3
-    # до конца job'а (run_file_job зовёт release в finally).
-    release_disk(declared)
-    await store.mark_upload_ticket_used(ticket.id)
     try:
+        # Источник записан — free уже его учитывает. Остаток резерва — под mp3,
+        # и считается он по длительности × битрейт конверсии, а не по размеру
+        # источника: 8 kbps Opus даёт mp3 в 3 раза больше входа. Без
+        # длительности (битый контейнер) — fallback на размер источника.
+        release_disk(declared)
+        duration = await probe_duration(dest)
+        output_est = (
+            estimate_transcription_audio_bytes(duration) if duration else declared
+        )
+        release_disk.resize(output_est)
+    except BaseException:
+        # mp3 не влезет (или ffprobe/диск упали) — файл не оставляем: тикет
+        # возвращается, агент повторит позже той же командой.
+        release_disk()
+        if os.path.exists(dest):
+            os.unlink(dest)
+        await store.release_upload_ticket(ticket.id)
+        raise
+    # Любой сбой handoff'а до того, как runner получил владение (упавший
+    # mark_used, отмена запроса, ошибка spawn) — release, иначе счётчик
+    # резерва течёт до рестарта и даёт ложные 507.
+    try:
+        await store.mark_upload_ticket_used(ticket.id)
         return await submit_uploaded_file(
             ticket.user_id,
             file_id,
@@ -458,6 +509,9 @@ async def upload_with_ticket(request: Request):
     except ToolError as exc:
         release_disk()
         return JSONResponse({"file_id": file_id, "detail": str(exc)}, status_code=409)
+    except BaseException:
+        release_disk()
+        raise
 
 
 app.include_router(transcripts_router)

@@ -198,8 +198,13 @@ async def run_file_job(
     filename_hint: Optional[str] = None,
     timecodes: bool = True,
     job_store: Optional[JobStore] = None,
+    on_finished: Optional[Callable[[], None]] = None,
 ) -> None:
-    """Зеркало _process_upload (webapp/main.py), со статусами в jobs."""
+    """Зеркало _process_upload (webapp/main.py), со статусами в jobs.
+
+    ``on_finished`` вызывается в finally после удаления temp-файлов —
+    PUT /api/uploads отдаёт сюда release резерва диска под mp3.
+    """
     store = job_store or get_job_store()
     bot = _make_bot()
     audio_path: Optional[str] = None
@@ -267,6 +272,8 @@ async def run_file_job(
         for path in (audio_path, source_path):
             if path and os.path.exists(path):
                 os.unlink(path)
+        if on_finished is not None:
+            on_finished()
         await bot.session.close()
 
 

@@ -212,11 +212,18 @@ def sanitize_upload_filename(name: Optional[str]) -> str:
     return os.path.basename(name or "upload").replace("/", "_") or "upload"
 
 
-async def submit_uploaded_file(user_id: int, file_id: str, *, timecodes: bool) -> dict:
+async def submit_uploaded_file(
+    user_id: int,
+    file_id: str,
+    *,
+    timecodes: bool,
+    on_finished: Optional[Callable[[], None]] = None,
+) -> dict:
     """Захватить загрузку mcpfile_<user>_<file_id>_* и запустить job.
 
     Общее ядро тула submit_file и PUT /api/uploads. Ошибки — ToolError
-    (вызывающая сторона решает, как их отдать клиенту).
+    (вызывающая сторона решает, как их отдать клиенту). ``on_finished``
+    прокидывается в run_file_job (вызов после удаления temp-файлов).
     """
     # Require the exact 32-char uuid4 hex issued by POST /api/files. A
     # truncated id (e.g. "a") used as a glob prefix could otherwise claim a
@@ -271,6 +278,7 @@ async def submit_uploaded_file(user_id: int, file_id: str, *, timecodes: bool) -
                 claimed_path,
                 filename_hint=filename_hint,
                 timecodes=timecodes,
+                on_finished=on_finished,
             ),
         )
     except BaseException:

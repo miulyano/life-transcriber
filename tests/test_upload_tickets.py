@@ -272,7 +272,7 @@ def test_put_stores_file_and_spawns_job(client, store, job_store, temp_dir, no_l
 def test_put_passes_timecodes_to_runner(client, store, job_store, temp_dir, no_limit, monkeypatch):
     seen = {}
 
-    def fake_run_file_job(job_id, user_id, path, *, filename_hint, timecodes):
+    def fake_run_file_job(job_id, user_id, path, *, filename_hint, timecodes, **_):
         seen.update(user_id=user_id, filename_hint=filename_hint, timecodes=timecodes)
 
         async def _noop():
@@ -433,13 +433,93 @@ def test_disk_reservation_counts_inflight_uploads(monkeypatch, temp_dir):
     assert main_module._reserved_upload_bytes == 0
 
 
-def test_put_releases_disk_reservation(client, store, temp_dir, job_store, no_limit, fake_spawn, monkeypatch):
+def test_put_keeps_output_reservation_until_job_finishes(client, store, temp_dir, job_store, no_limit, monkeypatch):
+    """Codex round 2: после загрузки остаётся резерв под mp3 (≈ размер
+    источника) — освобождается callback'ом on_finished из run_file_job."""
     monkeypatch.setattr(main_module, "_reserved_upload_bytes", 0)
+    captured = {}
+
+    def fake_run_file_job(job_id, user_id, path, *, filename_hint, timecodes, on_finished=None):
+        captured["on_finished"] = on_finished
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    monkeypatch.setattr(server_module, "run_file_job", fake_run_file_job)
+    monkeypatch.setattr(
+        server_module,
+        "spawn_transcription",
+        lambda u, f, *, task_id=None: (f("t").close(), "t")[1],
+    )
     ticket = asyncio.run(_ticket(store))
     res = client.put("/api/uploads", headers={"X-Upload-Ticket": ticket}, content=b"abc")
     assert res.status_code == 200, res.text
+    # исходник уже на диске (free его учитывает) — удержан только выход ffmpeg
+    assert main_module._reserved_upload_bytes == 3
+    captured["on_finished"]()
     assert main_module._reserved_upload_bytes == 0
-    # и при ошибке стрима
+    captured["on_finished"]()  # идемпотентно
+    assert main_module._reserved_upload_bytes == 0
+
+
+def test_put_releases_reservation_on_409(client, store, temp_dir, job_store, no_limit, fake_spawn, monkeypatch):
+    monkeypatch.setattr(main_module, "_reserved_upload_bytes", 0)
+    monkeypatch.setattr(server_module, "MAX_ACTIVE_JOBS_PER_USER", 0)
+    ticket = asyncio.run(_ticket(store))
+    res = client.put("/api/uploads", headers={"X-Upload-Ticket": ticket}, content=b"abc")
+    assert res.status_code == 409
+    assert main_module._reserved_upload_bytes == 0
+
+
+def test_put_requires_content_length(client, store, temp_dir):
+    """Codex round 2: chunked PUT без Content-Length обходил бы disk-check."""
+    ticket = asyncio.run(_ticket(store))
+    res = client.put(
+        "/api/uploads", headers={"X-Upload-Ticket": ticket}, content=iter([b"abc"])
+    )
+    assert res.status_code == 411
+    assert os.listdir(temp_dir) == []
+    # отбито до claim — тикет не тронут
+    assert asyncio.run(store.claim_upload_ticket(ticket)) is not None
+
+
+async def test_run_file_job_calls_on_finished(tmp_path, monkeypatch):
+    import webapp.job_runner as runner_module
+    from unittest.mock import MagicMock
+
+    js = JobStore(db_path=str(tmp_path / "jobs.db"))
+    job = await js.create(user_id=111, kind="file", source="a.mp3")
+    bot = MagicMock()
+    bot.session.close = AsyncMock()
+    monkeypatch.setattr(runner_module, "Bot", MagicMock(return_value=bot))
+    reporter = MagicMock()
+    reporter.__aenter__ = AsyncMock(return_value=reporter)
+    reporter.__aexit__ = AsyncMock(return_value=None)
+    reporter.fail = AsyncMock()
+    fake_cls = MagicMock()
+    fake_cls.for_chat = MagicMock(return_value=reporter)
+    monkeypatch.setattr(runner_module, "ProgressReporter", fake_cls)
+    monkeypatch.setattr(
+        runner_module,
+        "prepare_audio_for_transcription",
+        AsyncMock(side_effect=RuntimeError("ffmpeg down")),
+    )
+    src = tmp_path / "src.mp3"
+    src.write_bytes(b"x")
+    calls = []
+
+    await runner_module.run_file_job(
+        job.id, 111, str(src), filename_hint="a.mp3", job_store=js, on_finished=lambda: calls.append(1)
+    )
+
+    assert calls == [1]
+    assert not src.exists()
+
+
+def test_put_releases_disk_reservation_on_stream_error(client, store, temp_dir, job_store, no_limit, fake_spawn, monkeypatch):
+    monkeypatch.setattr(main_module, "_reserved_upload_bytes", 0)
     monkeypatch.setattr(main_module, "MAX_AGENT_UPLOAD_BYTES", 1)
     ticket = asyncio.run(_ticket(store))
     res = client.put("/api/uploads", headers={"X-Upload-Ticket": ticket}, content=b"abc")

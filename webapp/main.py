@@ -8,7 +8,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from glob import glob
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import aiofiles
 from aiogram import Bot
@@ -317,7 +317,12 @@ _reserved_upload_bytes = 0
 
 
 def _reserve_disk(declared_bytes: int):
-    """Резервирует место под загрузку или бросает 507. Возвращает release()."""
+    """Резервирует место под загрузку (источник + будущий mp3) или бросает 507.
+
+    Возвращает ``release(amount=None)``: без аргумента снимает весь остаток
+    резерва, с аргументом — часть (источник уже лежит на диске и учтён в
+    free, а резерв под mp3 держится до конца job'а). Идемпотентно.
+    """
     global _reserved_upload_bytes
     need = declared_bytes * 2
     try:
@@ -327,14 +332,14 @@ def _reserve_disk(declared_bytes: int):
     if free is not None and _reserved_upload_bytes + need + DISK_HEADROOM_BYTES > free:
         raise HTTPException(507, "Not enough free disk space on the server for this file")
     _reserved_upload_bytes += need
-    released = False
+    remaining = need
 
-    def _release() -> None:
-        nonlocal released
+    def _release(amount: Optional[int] = None) -> None:
+        nonlocal remaining
         global _reserved_upload_bytes
-        if not released:
-            released = True
-            _reserved_upload_bytes -= need
+        part = remaining if amount is None else min(amount, remaining)
+        remaining -= part
+        _reserved_upload_bytes -= part
 
     return _release
 
@@ -415,31 +420,43 @@ async def upload_with_ticket(request: Request):
     upload burns the ticket even if the job cannot be started (409 with
     file_id for a later submit_file).
     """
+    # Chunked без Content-Length обошёл бы disk-check — требуем длину до
+    # claim'а, чтобы отказ не трогал тикет (curl -T всегда её шлёт).
+    declared_header = request.headers.get("content-length", "")
+    if not declared_header.isdigit():
+        raise HTTPException(411, "Content-Length required")
+    declared = int(declared_header)
+
     store = get_token_store()
     ticket = await store.claim_upload_ticket(request.headers.get("x-upload-ticket", ""))
     if ticket is None:
         raise HTTPException(404, "upload ticket not found, expired or already used")
-    release_disk = lambda: None  # noqa: E731
     try:
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit():
-            release_disk = _reserve_disk(int(declared))
+        release_disk = _reserve_disk(declared)
+    except BaseException:
+        await store.release_upload_ticket(ticket.id)
+        raise
+    try:
         file_id, _ = await _store_agent_upload(
             ticket.user_id, ticket.filename, request.stream()
         )
     except BaseException:
+        release_disk()
         await store.release_upload_ticket(ticket.id)
         raise
-    finally:
-        # Файл записан (или нет) — резерв под его байты больше не нужен; mp3
-        # после ffmpeg живёт недолго и покрыт headroom.
-        release_disk()
+    # Источник записан — free уже его учитывает; держим только долю под mp3
+    # до конца job'а (run_file_job зовёт release в finally).
+    release_disk(declared)
     await store.mark_upload_ticket_used(ticket.id)
     try:
         return await submit_uploaded_file(
-            ticket.user_id, file_id, timecodes=ticket.timecodes
+            ticket.user_id,
+            file_id,
+            timecodes=ticket.timecodes,
+            on_finished=release_disk,
         )
     except ToolError as exc:
+        release_disk()
         return JSONResponse({"file_id": file_id, "detail": str(exc)}, status_code=409)
 
 

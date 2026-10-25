@@ -3,17 +3,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from glob import glob
+from typing import AsyncIterator
 
 import aiofiles
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.fastmcp.exceptions import ToolError
 
 from bot.config import settings
 from bot.services.job_store import get_job_store
@@ -31,7 +35,7 @@ from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
 from webapp.deps import resolve_user_id
 from webapp.mcp_auth import MCPBearerAuth
-from webapp.mcp_server import mcp
+from webapp.mcp_server import mcp, sanitize_upload_filename, submit_uploaded_file
 from webapp.transcripts_api import router as transcripts_router
 
 logger = logging.getLogger(__name__)
@@ -80,7 +84,7 @@ app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
 # which should be >= MAX_UPLOAD_MB).
 _MULTIPART_OVERHEAD = 16 * 1024 * 1024  # 16 MB for multipart headers/boundaries
 _MAX_REQUEST_BODY_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024 + _MULTIPART_OVERHEAD
-_UPLOAD_PATHS = ("/api/files", "/api/upload")
+_UPLOAD_PATHS = ("/api/files", "/api/upload", "/api/uploads")
 
 
 @app.middleware("http")
@@ -296,22 +300,39 @@ def _pending_upload_bytes(user_id: int) -> int:
     return total
 
 
-@app.post("/api/files")
-async def upload_file_for_agent(
-    file: UploadFile, user_id: int = Depends(resolve_user_id)
-) -> dict:
-    """Upload a media file for a later MCP submit_file(file_id) call.
+# Запас сверх самого файла: ffmpeg извлечёт рядом mp3 (≤ размера источника),
+# плюс место для других задач. Disk-full на общем volume ломает docker exec и
+# healthcheck'и всех контейнеров — лучше отбить загрузку заранее.
+DISK_HEADROOM_BYTES = 256 * 1024 * 1024
 
-    The user_id embedded in the filename is the ownership check: submit_file
-    globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
-    swept by the periodic temp cleanup (6h TTL). A per-file size cap and a
-    per-user pending-storage quota bound disk use on the shared temp volume;
-    a per-user lock makes the quota hold under concurrent uploads.
+
+def _free_disk_bytes(path: str) -> int:
+    return shutil.disk_usage(path).free
+
+
+def _check_free_disk(declared_bytes: int) -> None:
+    """507, если Content-Length не влезает в свободное место temp-volume."""
+    try:
+        free = _free_disk_bytes(settings.TEMP_DIR)
+    except OSError:
+        return
+    if declared_bytes * 2 + DISK_HEADROOM_BYTES > free:
+        raise HTTPException(507, "Not enough free disk space on the server for this file")
+
+
+async def _store_agent_upload(
+    user_id: int, filename: str, chunks: AsyncIterator[bytes]
+) -> tuple[str, int]:
+    """Записать поток в TEMP_DIR/mcpfile_<user>_<file_id>_<filename>.
+
+    Общее ядро POST /api/files и PUT /api/uploads. Per-file cap и per-user
+    pending-quota ограничивают диск на общем temp-volume; per-user lock
+    держит квоту под конкурентными загрузками. Частичный файл при любой
+    ошибке удаляется. Возвращает (file_id, bytes_written).
     """
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
     file_id = uuid.uuid4().hex
-    safe_name = os.path.basename(file.filename or "upload").replace("/", "_") or "upload"
-    dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{safe_name}")
+    dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{filename}")
 
     async with _upload_lock(user_id):
         existing = _pending_upload_bytes(user_id)
@@ -322,7 +343,9 @@ async def upload_file_for_agent(
         bytes_written = 0
         try:
             async with aiofiles.open(dest, "wb") as f:
-                while chunk := await file.read(1 << 20):
+                async for chunk in chunks:
+                    if not chunk:
+                        continue
                     bytes_written += len(chunk)
                     if bytes_written > MAX_AGENT_UPLOAD_BYTES:
                         raise HTTPException(413, "File too large")
@@ -338,7 +361,62 @@ async def upload_file_for_agent(
     logger.info(
         "Saved agent file %s (user %s, bytes=%s)", dest, user_id, bytes_written
     )
+    return file_id, bytes_written
+
+
+async def _upload_file_chunks(file: UploadFile) -> AsyncIterator[bytes]:
+    while chunk := await file.read(1 << 20):
+        yield chunk
+
+
+@app.post("/api/files")
+async def upload_file_for_agent(
+    file: UploadFile, user_id: int = Depends(resolve_user_id)
+) -> dict:
+    """Upload a media file for a later MCP submit_file(file_id) call.
+
+    The user_id embedded in the filename is the ownership check: submit_file
+    globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
+    swept by the periodic temp cleanup (6h TTL).
+    """
+    safe_name = sanitize_upload_filename(file.filename)
+    file_id, _ = await _store_agent_upload(user_id, safe_name, _upload_file_chunks(file))
     return {"file_id": file_id}
+
+
+@app.put("/api/uploads")
+async def upload_with_ticket(request: Request):
+    """Upload a local file with a one-time ticket from prepare_upload and
+    start its transcription in one request.
+
+    No bearer here: the ticket (X-Upload-Ticket header, never the URL — the
+    access log would keep it) is the credential and carries user_id,
+    filename and timecodes. Claim → stream → used: an interrupted stream
+    releases the claim so the same command can be retried; a successful
+    upload burns the ticket even if the job cannot be started (409 with
+    file_id for a later submit_file).
+    """
+    store = get_token_store()
+    ticket = await store.claim_upload_ticket(request.headers.get("x-upload-ticket", ""))
+    if ticket is None:
+        raise HTTPException(404, "upload ticket not found, expired or already used")
+    try:
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit():
+            _check_free_disk(int(declared))
+        file_id, _ = await _store_agent_upload(
+            ticket.user_id, ticket.filename, request.stream()
+        )
+    except BaseException:
+        await store.release_upload_ticket(ticket.id)
+        raise
+    await store.mark_upload_ticket_used(ticket.id)
+    try:
+        return await submit_uploaded_file(
+            ticket.user_id, file_id, timecodes=ticket.timecodes
+        )
+    except ToolError as exc:
+        return JSONResponse({"file_id": file_id, "detail": str(exc)}, status_code=409)
 
 
 app.include_router(transcripts_router)

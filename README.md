@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.16.1-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.17.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-CC%20BY--NC%204.0-lightgrey" alt="license">
 </p>
 
@@ -368,6 +368,7 @@ claude mcp remove transcriber; claude mcp add --transport http transcriber \
 | `request_access` / `check_access` | pairing-флоу (работают без токена) |
 | `submit_url(url, timecodes)` | транскрибация по ссылке → `job_id` |
 | `submit_file(file_id, timecodes)` | транскрибация загруженного файла → `job_id` |
+| `prepare_upload(filename, timecodes)` | одноразовый тикет + готовая `curl`-команда для локального файла; загрузка сразу запускает транскрибацию → `job_id` |
 | `get_job_status(job_id)` | статус/фаза/прогресс; при `done` — полный текст |
 | `cancel_job(job_id)` | отмена задачи (в чате — «Отменено») |
 | `list_transcripts` / `get_transcript(id, timecoded)` | история и полный текст (± таймкоды) |
@@ -375,8 +376,34 @@ claude mcp remove transcriber; claude mcp add --transport http transcriber \
 | `resend_to_chat(id, timecoded)` | переслать готовую запись в чат |
 | `get_limit` | остаток месячного лимита |
 
-**Файлы от агента** (аудио на десятки-сотни МБ) загружаются отдельным
-REST-вызовом под тем же bearer-токеном, затем передаются в `submit_file`:
+**Локальный файл с компьютера пользователя** — агент загружает его сам, без
+отдельных скриптов и без bearer-токена в shell-команде:
+
+1. Агент спрашивает подтверждение («Загрузить `meeting.m4a` (230 МБ)?») —
+   это soft-проверка из инструкций сервера; жёсткий барьер — permission-prompt
+   Claude Code на саму `curl`-команду, где виден путь к файлу.
+2. `prepare_upload(filename, timecodes)` → одноразовый тикет (TTL 15 минут,
+   в БД только sha256, не больше 5 живых на пользователя) и готовая команда:
+
+```bash
+curl -sS -T "/abs/path/meeting.m4a" -H "X-Upload-Ticket: <ticket>" \
+  https://<your-subdomain>.<your-domain>/api/uploads
+# → {"job_id": "..."} — транскрибация уже запущена
+```
+
+3. Агент поллит `get_job_status(job_id)`; прогресс и результат параллельно
+   приходят в Telegram, запись попадает в историю.
+
+Тикет живёт в заголовке, а не в URL — так он не оседает в access-логах.
+Обрыв загрузки освобождает тикет: та же команда повторяется, пока не истёк
+TTL. Если после загрузки задачу нельзя запустить (лимит активных задач),
+сервер отвечает `409 {"file_id", "detail"}` — файл остаётся на 6 часов для
+`submit_file(file_id)`. Если `Content-Length` не влезает в свободное место
+temp-volume — `507`. Файлы больше ~300 МБ агенту стоит грузить в фоне:
+таймаут shell-тула в Claude Code — 10 минут.
+
+**Legacy-путь** (любой MCP-клиент с собственным HTTP): загрузка под
+bearer-токеном, затем `submit_file`:
 
 ```bash
 curl -H "Authorization: Bearer <your-api-key>" \

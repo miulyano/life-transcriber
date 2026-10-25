@@ -310,14 +310,33 @@ def _free_disk_bytes(path: str) -> int:
     return shutil.disk_usage(path).free
 
 
-def _check_free_disk(declared_bytes: int) -> None:
-    """507, если Content-Length не влезает в свободное место temp-volume."""
+# Байты, обещанные уже идущим загрузкам (файл + будущий mp3). Без резерва
+# параллельные PUT проходили бы disk-check по одному и тому же free и вместе
+# забивали диск. Check + increment без await → атомарно в asyncio.
+_reserved_upload_bytes = 0
+
+
+def _reserve_disk(declared_bytes: int):
+    """Резервирует место под загрузку или бросает 507. Возвращает release()."""
+    global _reserved_upload_bytes
+    need = declared_bytes * 2
     try:
         free = _free_disk_bytes(settings.TEMP_DIR)
     except OSError:
-        return
-    if declared_bytes * 2 + DISK_HEADROOM_BYTES > free:
+        free = None
+    if free is not None and _reserved_upload_bytes + need + DISK_HEADROOM_BYTES > free:
         raise HTTPException(507, "Not enough free disk space on the server for this file")
+    _reserved_upload_bytes += need
+    released = False
+
+    def _release() -> None:
+        nonlocal released
+        global _reserved_upload_bytes
+        if not released:
+            released = True
+            _reserved_upload_bytes -= need
+
+    return _release
 
 
 async def _store_agent_upload(
@@ -400,16 +419,21 @@ async def upload_with_ticket(request: Request):
     ticket = await store.claim_upload_ticket(request.headers.get("x-upload-ticket", ""))
     if ticket is None:
         raise HTTPException(404, "upload ticket not found, expired or already used")
+    release_disk = lambda: None  # noqa: E731
     try:
         declared = request.headers.get("content-length")
         if declared and declared.isdigit():
-            _check_free_disk(int(declared))
+            release_disk = _reserve_disk(int(declared))
         file_id, _ = await _store_agent_upload(
             ticket.user_id, ticket.filename, request.stream()
         )
     except BaseException:
         await store.release_upload_ticket(ticket.id)
         raise
+    finally:
+        # Файл записан (или нет) — резерв под его байты больше не нужен; mp3
+        # после ffmpeg живёт недолго и покрыт headroom.
+        release_disk()
     await store.mark_upload_ticket_used(ticket.id)
     try:
         return await submit_uploaded_file(

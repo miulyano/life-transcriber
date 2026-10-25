@@ -538,6 +538,10 @@ class TokenStore:
                 used_at=None,
             )
             with self._connect() as conn:
+                # BEGIN IMMEDIATE: a plain SELECT would not open a transaction,
+                # so two concurrent creates could both count 4 and both insert
+                # (6 live tickets). The write lock serializes check + insert.
+                conn.execute("BEGIN IMMEDIATE")
                 if self._count_active_tickets(conn, user_id, now.isoformat()) >= (
                     MAX_ACTIVE_UPLOAD_TICKETS
                 ):

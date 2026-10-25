@@ -373,3 +373,75 @@ def test_legacy_files_endpoint_still_works(client, temp_dir, monkeypatch):
     assert res.status_code == 200
     file_id = res.json()["file_id"]
     assert (temp_dir / f"mcpfile_111_{file_id}_rec.mp3").read_bytes() == b"audio-bytes"
+
+
+# ------------------------------------------------- codex review: concurrency
+
+
+async def test_ticket_cap_holds_under_concurrency(store, monkeypatch):
+    """Codex P2: два параллельных create на пороге cap — один должен упасть.
+
+    Барьер держит первый поток после COUNT, чтобы второй успел дойти до
+    своего COUNT, если проверка и INSERT не атомарны (6 тикетов вместо 5).
+    С BEGIN IMMEDIATE второй блокируется на входе в транзакцию, барьер у
+    первого истекает по таймауту, и второй видит уже 5.
+    """
+    import threading
+
+    for _ in range(MAX_ACTIVE_UPLOAD_TICKETS - 1):
+        await store.create_upload_ticket(111, "a.mp3", timecodes=True)
+
+    barrier = threading.Barrier(2)
+    real_count = TokenStore._count_active_tickets
+
+    def slow_count(conn, user_id, now):
+        n = real_count(conn, user_id, now)
+        try:
+            barrier.wait(timeout=1.0)
+        except threading.BrokenBarrierError:
+            pass
+        return n
+
+    monkeypatch.setattr(TokenStore, "_count_active_tickets", staticmethod(slow_count))
+    results = await asyncio.gather(
+        store.create_upload_ticket(111, "b.mp3", timecodes=True),
+        store.create_upload_ticket(111, "c.mp3", timecodes=True),
+        return_exceptions=True,
+    )
+    errors = [r for r in results if isinstance(r, UploadTicketCapError)]
+    assert len(errors) == 1, results
+    monkeypatch.setattr(TokenStore, "_count_active_tickets", staticmethod(real_count))
+    assert await store.count_active_upload_tickets(111) == MAX_ACTIVE_UPLOAD_TICKETS
+
+
+def test_disk_reservation_counts_inflight_uploads(monkeypatch, temp_dir):
+    """Codex P2: параллельные загрузки не должны все пройти disk-check по
+    одному и тому же свободному месту — объём резервируется до стрима."""
+    from fastapi import HTTPException
+
+    gib = 1024 ** 3
+    monkeypatch.setattr(main_module, "_free_disk_bytes", lambda path: 7 * gib)
+    monkeypatch.setattr(main_module, "_reserved_upload_bytes", 0)
+
+    release_a = main_module._reserve_disk(3 * gib)  # 6 GiB + headroom ≤ 7 GiB
+    with pytest.raises(HTTPException) as exc:
+        main_module._reserve_disk(3 * gib)  # второй уже не влезает
+    assert exc.value.status_code == 507
+    release_a()
+    release_b = main_module._reserve_disk(3 * gib)  # после release — снова ок
+    release_b()
+    assert main_module._reserved_upload_bytes == 0
+
+
+def test_put_releases_disk_reservation(client, store, temp_dir, job_store, no_limit, fake_spawn, monkeypatch):
+    monkeypatch.setattr(main_module, "_reserved_upload_bytes", 0)
+    ticket = asyncio.run(_ticket(store))
+    res = client.put("/api/uploads", headers={"X-Upload-Ticket": ticket}, content=b"abc")
+    assert res.status_code == 200, res.text
+    assert main_module._reserved_upload_bytes == 0
+    # и при ошибке стрима
+    monkeypatch.setattr(main_module, "MAX_AGENT_UPLOAD_BYTES", 1)
+    ticket = asyncio.run(_ticket(store))
+    res = client.put("/api/uploads", headers={"X-Upload-Ticket": ticket}, content=b"abc")
+    assert res.status_code == 413
+    assert main_module._reserved_upload_bytes == 0

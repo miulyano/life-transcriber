@@ -565,6 +565,7 @@ def test_mcp_endpoint_end_to_end(monkeypatch, tmp_path):
             "check_access",
             "submit_url",
             "submit_file",
+            "prepare_upload",
             "get_job_status",
             "cancel_job",
             "list_transcripts",

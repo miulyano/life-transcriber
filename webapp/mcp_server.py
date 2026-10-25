@@ -32,7 +32,12 @@ from bot.handlers.commands import _build_limit_text
 from bot.services.formatter import render_timecode_segments
 from bot.services.job_store import get_job_store
 from bot.services.task_registry import cancel_task, new_task_id, spawn_transcription
-from bot.services.token_store import AUTH_REQUEST_TTL_SEC, get_token_store
+from bot.services.token_store import (
+    AUTH_REQUEST_TTL_SEC,
+    UPLOAD_TICKET_TTL_SEC,
+    UploadTicketCapError,
+    get_token_store,
+)
 from bot.services.transcript_store import get_transcript_store
 from bot.services.usage_store import LimitExceededError, get_store
 from bot.utils.filename import split_header_and_body
@@ -100,10 +105,19 @@ INSTRUCTIONS = """life-transcriber: транскрибация аудио/вид
 → token + connect_snippet; 4) переподключись с header Authorization: Bearer <token> \
 (выполни connect_snippet — в живое соединение header добавить нельзя).
 
-Работа: submit_url/submit_file → job_id → поллинг get_job_status до done/error \
-(при done в ответе полный текст). Файлы загружаются отдельно: POST /api/files \
-(multipart, тот же bearer) → file_id → submit_file(file_id). Ответы get_transcript/\
-get_job_status для длинных записей могут быть сотни КБ."""
+Работа: submit_url → job_id → поллинг get_job_status до done/error (при done в \
+ответе полный текст). Ответы get_transcript/get_job_status для длинных записей могут \
+быть сотни КБ.
+
+Локальный файл пользователя: 1) СНАЧАЛА спроси у пользователя подтверждение, назвав \
+файл и размер («Загрузить X (N МБ) на сервер транскрибации?»), и жди явного «да»; \
+2) prepare_upload(filename) → одноразовый тикет (TTL 15 минут) и готовая команда \
+`command`; 3) выполни её в shell, подставив АБСОЛЮТНЫЙ путь к файлу (файлы больше \
+~300 МБ — в фоне: загрузка может идти дольше таймаута shell-тула); ответ сервера — \
+{"job_id"} — транскрибация уже запущена; 4) поллинг get_job_status(job_id). \
+Повтор после обрыва — той же командой, пока тикет жив; 409 с file_id → позже \
+submit_file(file_id). Bearer-токен в shell-команды НИКОГДА не подставляй. \
+Старый путь (POST /api/files с bearer → submit_file) тоже работает."""
 
 mcp = FastMCP(
     "life-transcriber",
@@ -184,6 +198,92 @@ def _connect_snippet(token: str) -> str:
         f"claude mcp add --transport http transcriber {_mcp_url()} "
         f'--header "Authorization: Bearer {token}"'
     )
+
+
+def _uploads_url() -> str:
+    if settings.WEBAPP_URL:
+        return settings.WEBAPP_URL.rstrip("/") + "/api/uploads"
+    return "<WEBAPP_URL>/api/uploads"
+
+
+def sanitize_upload_filename(name: Optional[str]) -> str:
+    """Имя файла из клиента → безопасный хвост для mcpfile_*: только basename,
+    без разделителей пути. Общий для POST /api/files и prepare_upload."""
+    return os.path.basename(name or "upload").replace("/", "_") or "upload"
+
+
+async def submit_uploaded_file(
+    user_id: int,
+    file_id: str,
+    *,
+    timecodes: bool,
+    on_finished: Optional[Callable[[], None]] = None,
+) -> dict:
+    """Захватить загрузку mcpfile_<user>_<file_id>_* и запустить job.
+
+    Общее ядро тула submit_file и PUT /api/uploads. Ошибки — ToolError
+    (вызывающая сторона решает, как их отдать клиенту). ``on_finished``
+    прокидывается в run_file_job (вызов после удаления temp-файлов).
+    """
+    # Require the exact 32-char uuid4 hex issued by POST /api/files. A
+    # truncated id (e.g. "a") used as a glob prefix could otherwise claim a
+    # different upload of the same user and transcribe the wrong file.
+    safe_id = (file_id or "").lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", safe_id):
+        raise ToolError("file not found")
+    matches = glob(f"{settings.TEMP_DIR}/mcpfile_{user_id}_{safe_id}_*")
+    if not matches:
+        raise ToolError("file not found")
+    source_path = matches[0]
+    filename_hint = os.path.basename(source_path).split(
+        f"mcpfile_{user_id}_{safe_id}_", 1
+    )[-1]
+
+    # Atomically claim the upload before creating the job: os.replace is
+    # atomic, so a concurrent submit with the same file_id loses the race
+    # and gets "file not found" instead of a duplicate job on the same file.
+    claimed_path = os.path.join(
+        settings.TEMP_DIR, f"mcpclaim_{user_id}_{uuid.uuid4().hex}_{filename_hint}"
+    )
+    try:
+        os.replace(source_path, claimed_path)
+        # os.replace preserves mtime; refresh it so an upload claimed near
+        # its 6h TTL is not swept by the temp cleaner mid-processing.
+        os.utime(claimed_path, None)
+    except OSError:
+        raise ToolError("file not found")
+
+    async def _restore_claim() -> None:
+        # Return the upload to its original mcpfile_ name so the agent can
+        # retry with the same file_id. An unlinked or leaked mcpclaim_ file
+        # would no longer match submit_file's glob (data loss).
+        if os.path.exists(claimed_path):
+            os.replace(claimed_path, source_path)
+
+    # ANY failure/cancellation between the claim and a successful spawn must
+    # restore the upload — catch BaseException so CancelledError cannot
+    # strand it either. On success the runner owns and deletes claimed_path.
+    try:
+        try:
+            await get_store().assert_within_limit(user_id)
+        except LimitExceededError as exc:
+            raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
+        return await _spawn_job(
+            user_id,
+            kind="file",
+            source=filename_hint,
+            runner=lambda job_id: run_file_job(
+                job_id,
+                user_id,
+                claimed_path,
+                filename_hint=filename_hint,
+                timecodes=timecodes,
+                on_finished=on_finished,
+            ),
+        )
+    except BaseException:
+        await _restore_claim()
+        raise
 
 
 async def _spawn_job(
@@ -324,66 +424,46 @@ async def submit_url(url: str, timecodes: bool = True) -> dict:
 async def submit_file(file_id: str, timecodes: bool = True) -> dict:
     """Transcribe a previously uploaded file. Upload first: POST /api/files
     (multipart field "file", same bearer token) → {"file_id"}. The uploaded
-    file lives up to 6 hours and is consumed by this call."""
+    file lives up to 6 hours and is consumed by this call. For a local file
+    on the user's machine prefer prepare_upload — it needs no bearer in the
+    shell command and starts the job right after the upload."""
     user_id = _require_user_id()
-    # Require the exact 32-char uuid4 hex issued by POST /api/files. A
-    # truncated id (e.g. "a") used as a glob prefix could otherwise claim a
-    # different upload of the same user and transcribe the wrong file.
-    safe_id = (file_id or "").lower()
-    if not re.fullmatch(r"[0-9a-f]{32}", safe_id):
-        raise ToolError("file not found")
-    matches = glob(f"{settings.TEMP_DIR}/mcpfile_{user_id}_{safe_id}_*")
-    if not matches:
-        raise ToolError("file not found")
-    source_path = matches[0]
-    filename_hint = os.path.basename(source_path).split(
-        f"mcpfile_{user_id}_{safe_id}_", 1
-    )[-1]
+    return await submit_uploaded_file(user_id, file_id, timecodes=timecodes)
 
-    # Atomically claim the upload before creating the job: os.replace is
-    # atomic, so a concurrent submit with the same file_id loses the race
-    # and gets "file not found" instead of a duplicate job on the same file.
-    claimed_path = os.path.join(
-        settings.TEMP_DIR, f"mcpclaim_{user_id}_{uuid.uuid4().hex}_{filename_hint}"
-    )
+
+@mcp.tool()
+async def prepare_upload(filename: str, timecodes: bool = True) -> dict:
+    """Get a one-time upload ticket for a LOCAL file on the user's machine.
+    Ask the user to confirm the upload (name + size) first. Then run the
+    returned `command` in a shell with the absolute path substituted for
+    <path> (large files: run it in the background). The server answers
+    {"job_id"} and the transcription starts immediately — poll
+    get_job_status(job_id). The ticket is single-use and expires in 15
+    minutes; a failed/interrupted upload may be retried with the same
+    command. Never put the bearer token into the command."""
+    user_id = _require_user_id()
     try:
-        os.replace(source_path, claimed_path)
-        # os.replace preserves mtime; refresh it so an upload claimed near
-        # its 6h TTL is not swept by the temp cleaner mid-processing.
-        os.utime(claimed_path, None)
-    except OSError:
-        raise ToolError("file not found")
-
-    async def _restore_claim() -> None:
-        # Return the upload to its original mcpfile_ name so the agent can
-        # retry with the same file_id. An unlinked or leaked mcpclaim_ file
-        # would no longer match submit_file's glob (data loss).
-        if os.path.exists(claimed_path):
-            os.replace(claimed_path, source_path)
-
-    # ANY failure/cancellation between the claim and a successful spawn must
-    # restore the upload — catch BaseException so CancelledError cannot
-    # strand it either. On success the runner owns and deletes claimed_path.
+        await get_store().assert_within_limit(user_id)
+    except LimitExceededError as exc:
+        raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
+    safe_name = sanitize_upload_filename(filename)
     try:
-        try:
-            await get_store().assert_within_limit(user_id)
-        except LimitExceededError as exc:
-            raise ToolError(f"monthly limit exhausted ({exc.limit_hours}h)")
-        return await _spawn_job(
-            user_id,
-            kind="file",
-            source=filename_hint,
-            runner=lambda job_id: run_file_job(
-                job_id,
-                user_id,
-                claimed_path,
-                filename_hint=filename_hint,
-                timecodes=timecodes,
-            ),
+        ticket, _ = await get_token_store().create_upload_ticket(
+            user_id, safe_name, timecodes
         )
-    except BaseException:
-        await _restore_claim()
-        raise
+    except UploadTicketCapError as exc:
+        raise ToolError(str(exc))
+    url = _uploads_url()
+    return {
+        "upload_url": url,
+        "ticket": ticket,
+        "filename": safe_name,
+        "expires_in": UPLOAD_TICKET_TTL_SEC,
+        "max_mb": settings.MAX_UPLOAD_MB,
+        # -sS без -f: тело ответа (job_id / detail / file_id при 409) нужно
+        # агенту и при не-2xx статусе.
+        "command": f'curl -sS -T "<path>" -H "X-Upload-Ticket: {ticket}" {url}',
+    }
 
 
 @mcp.tool()

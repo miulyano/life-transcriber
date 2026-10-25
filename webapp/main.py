@@ -3,21 +3,29 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
 from glob import glob
+from typing import AsyncIterator, Optional
 
 import aiofiles
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.fastmcp.exceptions import ToolError
 
 from bot.config import settings
 from bot.services.job_store import get_job_store
-from bot.services.media import prepare_audio_for_transcription
+from bot.services.media import (
+    estimate_transcription_audio_bytes,
+    prepare_audio_for_transcription,
+    probe_duration,
+)
 from bot.services.source_meta import SourceMetadata
 from bot.services.task_registry import get_semaphore
 from bot.services.temp_cleanup import run_periodic_temp_cleanup
@@ -31,7 +39,7 @@ from webapp.auth import validate_init_data
 from webapp.delivery import send_transcript_to_chat
 from webapp.deps import resolve_user_id
 from webapp.mcp_auth import MCPBearerAuth
-from webapp.mcp_server import mcp
+from webapp.mcp_server import mcp, sanitize_upload_filename, submit_uploaded_file
 from webapp.transcripts_api import router as transcripts_router
 
 logger = logging.getLogger(__name__)
@@ -80,7 +88,7 @@ app = FastAPI(title="life-transcriber webapp", lifespan=lifespan)
 # which should be >= MAX_UPLOAD_MB).
 _MULTIPART_OVERHEAD = 16 * 1024 * 1024  # 16 MB for multipart headers/boundaries
 _MAX_REQUEST_BODY_BYTES = settings.MAX_UPLOAD_MB * 1024 * 1024 + _MULTIPART_OVERHEAD
-_UPLOAD_PATHS = ("/api/files", "/api/upload")
+_UPLOAD_PATHS = ("/api/files", "/api/upload", "/api/uploads")
 
 
 @app.middleware("http")
@@ -296,22 +304,91 @@ def _pending_upload_bytes(user_id: int) -> int:
     return total
 
 
-@app.post("/api/files")
-async def upload_file_for_agent(
-    file: UploadFile, user_id: int = Depends(resolve_user_id)
-) -> dict:
-    """Upload a media file for a later MCP submit_file(file_id) call.
+# Запас сверх самого файла: ffmpeg извлечёт рядом mp3 (≤ размера источника),
+# плюс место для других задач. Disk-full на общем volume ломает docker exec и
+# healthcheck'и всех контейнеров — лучше отбить загрузку заранее.
+DISK_HEADROOM_BYTES = 256 * 1024 * 1024
 
-    The user_id embedded in the filename is the ownership check: submit_file
-    globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
-    swept by the periodic temp cleanup (6h TTL). A per-file size cap and a
-    per-user pending-storage quota bound disk use on the shared temp volume;
-    a per-user lock makes the quota hold under concurrent uploads.
+
+def _free_disk_bytes(path: str) -> int:
+    return shutil.disk_usage(path).free
+
+
+# Байты, обещанные уже идущим загрузкам (файл + будущий mp3). Без резерва
+# параллельные PUT проходили бы disk-check по одному и тому же free и вместе
+# забивали диск. Check + increment без await → атомарно в asyncio.
+_reserved_upload_bytes = 0
+
+
+def _disk_fits(extra_bytes: int) -> bool:
+    """Влезут ли ещё extra_bytes сверх уже зарезервированного + headroom."""
+    try:
+        free = _free_disk_bytes(settings.TEMP_DIR)
+    except OSError:
+        return True
+    return _reserved_upload_bytes + extra_bytes + DISK_HEADROOM_BYTES <= free
+
+
+class _DiskReservation:
+    """Резерв места под одну загрузку: источник во время стрима + будущий mp3.
+
+    ``release(amount=None)`` снимает остаток (или часть); ``resize(target)``
+    меняет остаток под уточнённую оценку mp3 (рост — через повторный
+    disk-check, иначе 507). Идемпотентно, счётчик не уходит в минус.
+    """
+
+    def __init__(self, declared_bytes: int) -> None:
+        global _reserved_upload_bytes
+        # Пока стримим, длительность неизвестна — держим 2× размера источника
+        # как верхнюю границу (источник + mp3), уточняем после ffprobe.
+        need = declared_bytes * 2
+        if not _disk_fits(need):
+            raise HTTPException(
+                507, "Not enough free disk space on the server for this file"
+            )
+        _reserved_upload_bytes += need
+        self.remaining = need
+
+    def release(self, amount: Optional[int] = None) -> None:
+        global _reserved_upload_bytes
+        part = self.remaining if amount is None else min(amount, self.remaining)
+        self.remaining -= part
+        _reserved_upload_bytes -= part
+
+    __call__ = release
+
+    def resize(self, target: int) -> None:
+        global _reserved_upload_bytes
+        if target <= self.remaining:
+            self.release(self.remaining - target)
+            return
+        grow = target - self.remaining
+        if not _disk_fits(grow):
+            raise HTTPException(
+                507, "Not enough free disk space on the server for the extracted audio"
+            )
+        _reserved_upload_bytes += grow
+        self.remaining = target
+
+
+def _reserve_disk(declared_bytes: int) -> _DiskReservation:
+    """Резервирует место под загрузку или бросает 507."""
+    return _DiskReservation(declared_bytes)
+
+
+async def _store_agent_upload(
+    user_id: int, filename: str, chunks: AsyncIterator[bytes]
+) -> tuple[str, int, str]:
+    """Записать поток в TEMP_DIR/mcpfile_<user>_<file_id>_<filename>.
+
+    Общее ядро POST /api/files и PUT /api/uploads. Per-file cap и per-user
+    pending-quota ограничивают диск на общем temp-volume; per-user lock
+    держит квоту под конкурентными загрузками. Частичный файл при любой
+    ошибке удаляется. Возвращает (file_id, bytes_written, dest).
     """
     os.makedirs(settings.TEMP_DIR, exist_ok=True)
     file_id = uuid.uuid4().hex
-    safe_name = os.path.basename(file.filename or "upload").replace("/", "_") or "upload"
-    dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{safe_name}")
+    dest = os.path.join(settings.TEMP_DIR, f"mcpfile_{user_id}_{file_id}_{filename}")
 
     async with _upload_lock(user_id):
         existing = _pending_upload_bytes(user_id)
@@ -322,7 +399,9 @@ async def upload_file_for_agent(
         bytes_written = 0
         try:
             async with aiofiles.open(dest, "wb") as f:
-                while chunk := await file.read(1 << 20):
+                async for chunk in chunks:
+                    if not chunk:
+                        continue
                     bytes_written += len(chunk)
                     if bytes_written > MAX_AGENT_UPLOAD_BYTES:
                         raise HTTPException(413, "File too large")
@@ -338,7 +417,101 @@ async def upload_file_for_agent(
     logger.info(
         "Saved agent file %s (user %s, bytes=%s)", dest, user_id, bytes_written
     )
+    return file_id, bytes_written, dest
+
+
+async def _upload_file_chunks(file: UploadFile) -> AsyncIterator[bytes]:
+    while chunk := await file.read(1 << 20):
+        yield chunk
+
+
+@app.post("/api/files")
+async def upload_file_for_agent(
+    file: UploadFile, user_id: int = Depends(resolve_user_id)
+) -> dict:
+    """Upload a media file for a later MCP submit_file(file_id) call.
+
+    The user_id embedded in the filename is the ownership check: submit_file
+    globs only mcpfile_<its own user_id>_… paths. Unclaimed uploads are
+    swept by the periodic temp cleanup (6h TTL).
+    """
+    safe_name = sanitize_upload_filename(file.filename)
+    file_id, _, _ = await _store_agent_upload(user_id, safe_name, _upload_file_chunks(file))
     return {"file_id": file_id}
+
+
+@app.put("/api/uploads")
+async def upload_with_ticket(request: Request):
+    """Upload a local file with a one-time ticket from prepare_upload and
+    start its transcription in one request.
+
+    No bearer here: the ticket (X-Upload-Ticket header, never the URL — the
+    access log would keep it) is the credential and carries user_id,
+    filename and timecodes. Claim → stream → used: an interrupted stream
+    releases the claim so the same command can be retried; a successful
+    upload burns the ticket even if the job cannot be started (409 with
+    file_id for a later submit_file).
+    """
+    # Chunked без Content-Length обошёл бы disk-check — требуем длину до
+    # claim'а, чтобы отказ не трогал тикет (curl -T всегда её шлёт).
+    declared_header = request.headers.get("content-length", "")
+    if not declared_header.isdigit():
+        raise HTTPException(411, "Content-Length required")
+    declared = int(declared_header)
+
+    store = get_token_store()
+    ticket = await store.claim_upload_ticket(request.headers.get("x-upload-ticket", ""))
+    if ticket is None:
+        raise HTTPException(404, "upload ticket not found, expired or already used")
+    try:
+        release_disk = _reserve_disk(declared)
+    except BaseException:
+        await store.release_upload_ticket(ticket.id)
+        raise
+    try:
+        file_id, _, dest = await _store_agent_upload(
+            ticket.user_id, ticket.filename, request.stream()
+        )
+    except BaseException:
+        release_disk()
+        await store.release_upload_ticket(ticket.id)
+        raise
+    try:
+        # Источник записан — free уже его учитывает. Остаток резерва — под mp3,
+        # и считается он по длительности × битрейт конверсии, а не по размеру
+        # источника: 8 kbps Opus даёт mp3 в 3 раза больше входа. Без
+        # длительности (битый контейнер) — fallback на размер источника.
+        release_disk(declared)
+        duration = await probe_duration(dest)
+        output_est = (
+            estimate_transcription_audio_bytes(duration) if duration else declared
+        )
+        release_disk.resize(output_est)
+    except BaseException:
+        # mp3 не влезет (или ffprobe/диск упали) — файл не оставляем: тикет
+        # возвращается, агент повторит позже той же командой.
+        release_disk()
+        if os.path.exists(dest):
+            os.unlink(dest)
+        await store.release_upload_ticket(ticket.id)
+        raise
+    # Любой сбой handoff'а до того, как runner получил владение (упавший
+    # mark_used, отмена запроса, ошибка spawn) — release, иначе счётчик
+    # резерва течёт до рестарта и даёт ложные 507.
+    try:
+        await store.mark_upload_ticket_used(ticket.id)
+        return await submit_uploaded_file(
+            ticket.user_id,
+            file_id,
+            timecodes=ticket.timecodes,
+            on_finished=release_disk,
+        )
+    except ToolError as exc:
+        release_disk()
+        return JSONResponse({"file_id": file_id, "detail": str(exc)}, status_code=409)
+    except BaseException:
+        release_disk()
+        raise
 
 
 app.include_router(transcripts_router)

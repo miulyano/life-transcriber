@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP-тул `prepare_upload(filename, timecodes)` и эндпоинт `PUT /api/uploads`: агент загружает локальный файл одной `curl`-командой по одноразовому тикету (заголовок `X-Upload-Ticket`, TTL 15 минут, sha256 в БД, ≤5 живых на пользователя) без bearer-токена в shell; загрузка сразу запускает транскрибацию → `job_id`. Обрыв освобождает тикет для повтора, лимит активных задач → `409` с `file_id` для `submit_file`, без `Content-Length` → `411`, нехватка диска с учётом идущих загрузок и будущего mp3 (оценка по длительности из ffprobe) → `507`
+
+### Changed
+
+- `prepare_audio_for_transcription` задаёт явный битрейт mp3 (`-b:a 24k` — прежний фактический дефолт libmp3lame для 16 kHz mono), чтобы оценка места под выход считалась от той же константы
 - Ссылки на публичные share Frame.io (`https://next.frame.io/share/<id>/view/<id>`): медиа резолвится через share-API без логина, качается только audio-дорожка из HLS через yt-dlp (с прогрессом), новый источник «Frame.io» в футере. Ссылка на папку share, приватный/удалённый asset и файл без транскода дают понятные ошибки
 
 ### Fixed

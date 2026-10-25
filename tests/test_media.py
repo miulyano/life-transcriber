@@ -73,3 +73,31 @@ async def test_extract_audio_reuses_media_preparation(monkeypatch):
 
     assert result == "/tmp/audio.mp3"
     assert calls == [("/tmp/video.mp4", "/tmp/out")]
+
+
+async def test_prepare_audio_sets_explicit_bitrate(tmp_path, monkeypatch):
+    """Явный -b:a: оценка места под mp3 (webapp) считается от той же константы."""
+    import bot.services.media as media_module
+
+    captured = {}
+
+    async def fake_run_ffmpeg(*args):
+        captured["args"] = args
+        open(args[-1], "wb").close()
+
+    monkeypatch.setattr(media_module, "run_ffmpeg", fake_run_ffmpeg)
+    source = tmp_path / "src.wav"
+    source.write_bytes(b"x")
+    await media_module.prepare_audio_for_transcription(str(source), str(tmp_path))
+    args = captured["args"]
+    assert args[args.index("-b:a") + 1] == f"{media_module.TRANSCRIPTION_AUDIO_BITRATE_KBPS}k"
+
+
+def test_estimate_transcription_audio_bytes():
+    """60 с при 24 kbps по замеру = 180 296 байт; оценка — с запасом, но не в разы."""
+    from bot.services.media import estimate_transcription_audio_bytes
+
+    est = estimate_transcription_audio_bytes(60.0)
+    assert 180_296 <= est <= 2 * 180_296
+    assert estimate_transcription_audio_bytes(0) >= 0
+    assert estimate_transcription_audio_bytes(3600.0) > estimate_transcription_audio_bytes(60.0)

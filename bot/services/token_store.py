@@ -9,6 +9,11 @@
   (request_access → подтверждение в боте → check_access). Создаёт их
   webapp-процесс, approve/decline пишет bot-процесс — связь через общую БД,
   все статусные переходы только conditional UPDATE (гонки между процессами).
+- ``upload_tickets`` — одноразовые короткоживущие тикеты на загрузку файла
+  (prepare_upload → PUT /api/uploads). Тикет заменяет bearer в shell-команде
+  агента: в БД только sha256, состояния claimed/used — conditional UPDATE,
+  чтобы два параллельных PUT не залили файл дважды, а обрыв стрима
+  освобождал тикет для повтора.
 
 Паттерн доступа — как в transcript_store: короткоживущие соединения,
 WAL, busy_timeout, sync-код через ``asyncio.to_thread``.
@@ -34,6 +39,10 @@ AUTH_REQUEST_TTL_SEC = 600  # 10 минут на подтверждение pair
 # только защита БД от неограниченного роста, не admission gate.
 MAX_PENDING_PER_SOURCE = 3
 MAX_PENDING_REQUESTS = 100
+UPLOAD_TICKET_TTL_SEC = 900  # 15 минут на то, чтобы агент запустил curl
+# Живых (не использованных, не истёкших) тикетов на пользователя. Защита от
+# спама prepare_upload и ограничение ущерба при утечке тикета.
+MAX_ACTIVE_UPLOAD_TICKETS = 5
 _PAIRING_ALPHABET = string.ascii_uppercase + string.digits
 
 _SCHEMA = """
@@ -60,12 +69,29 @@ CREATE TABLE IF NOT EXISTS auth_requests (
     created_at       TEXT NOT NULL,
     expires_at       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS upload_tickets (
+    id           TEXT PRIMARY KEY,
+    ticket_hash  TEXT NOT NULL UNIQUE,
+    user_id      INTEGER NOT NULL,
+    filename     TEXT NOT NULL,
+    timecodes    INTEGER NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    claimed_at   TEXT,
+    used_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_upload_tickets_user ON upload_tickets(user_id);
 """
 
 _TOKEN_COLUMNS = "id, user_id, label, token_hash, created_at, last_used_at, revoked"
 _REQUEST_COLUMNS = (
     "id, pairing_code, user_id, agent_name, poll_secret_hash, status, "
     "token_plain, source, created_at, expires_at"
+)
+_TICKET_COLUMNS = (
+    "id, ticket_hash, user_id, filename, timecodes, created_at, expires_at, "
+    "claimed_at, used_at"
 )
 
 
@@ -99,6 +125,22 @@ class PollResult:
     status: str
     token: Optional[str] = None
     agent_name: str = ""
+
+
+@dataclass
+class UploadTicket:
+    id: str
+    user_id: int
+    filename: str
+    timecodes: bool
+    created_at: str
+    expires_at: str
+    claimed_at: Optional[str]
+    used_at: Optional[str]
+
+
+class UploadTicketCapError(RuntimeError):
+    """У пользователя уже MAX_ACTIVE_UPLOAD_TICKETS живых тикетов."""
 
 
 def _sha256(value: str) -> str:
@@ -444,11 +486,167 @@ class TokenStore:
                 cur = conn.execute(
                     "DELETE FROM auth_requests WHERE created_at<?", (cutoff,)
                 )
-            return cur.rowcount
+                removed = cur.rowcount
+                cur = conn.execute(
+                    "DELETE FROM upload_tickets WHERE created_at<?", (cutoff,)
+                )
+                removed += cur.rowcount
+            return removed
+
+        return await asyncio.to_thread(_run)
+
+    # ------------------------------------------------------- upload_tickets
+
+    @staticmethod
+    def _ticket_row(row: tuple) -> UploadTicket:
+        (id_, _hash, user_id, filename, timecodes, created, expires, claimed, used) = row
+        return UploadTicket(
+            id=id_,
+            user_id=int(user_id),
+            filename=filename,
+            timecodes=bool(timecodes),
+            created_at=created,
+            expires_at=expires,
+            claimed_at=claimed,
+            used_at=used,
+        )
+
+    @staticmethod
+    def _count_active_tickets(conn: sqlite3.Connection, user_id: int, now: str) -> int:
+        return conn.execute(
+            "SELECT COUNT(*) FROM upload_tickets "
+            "WHERE user_id=? AND used_at IS NULL AND expires_at>?",
+            (user_id, now),
+        ).fetchone()[0]
+
+    async def create_upload_ticket(
+        self, user_id: int, filename: str, timecodes: bool
+    ) -> tuple[str, UploadTicket]:
+        """Выдать одноразовый тикет на загрузку. Возвращает (plaintext, запись)."""
+
+        def _run() -> tuple[str, UploadTicket]:
+            now = _now()
+            ticket = secrets.token_urlsafe(32)
+            record = UploadTicket(
+                id=uuid.uuid4().hex,
+                user_id=user_id,
+                filename=filename,
+                timecodes=timecodes,
+                created_at=now.isoformat(),
+                expires_at=(now + timedelta(seconds=UPLOAD_TICKET_TTL_SEC)).isoformat(),
+                claimed_at=None,
+                used_at=None,
+            )
+            with self._connect() as conn:
+                # BEGIN IMMEDIATE: a plain SELECT would not open a transaction,
+                # so two concurrent creates could both count 4 and both insert
+                # (6 live tickets). The write lock serializes check + insert.
+                conn.execute("BEGIN IMMEDIATE")
+                if self._count_active_tickets(conn, user_id, now.isoformat()) >= (
+                    MAX_ACTIVE_UPLOAD_TICKETS
+                ):
+                    raise UploadTicketCapError(
+                        f"too many pending upload tickets ({MAX_ACTIVE_UPLOAD_TICKETS} max) "
+                        "— use one of them or wait for them to expire"
+                    )
+                conn.execute(
+                    f"INSERT INTO upload_tickets ({_TICKET_COLUMNS}) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        record.id,
+                        _sha256(ticket),
+                        record.user_id,
+                        record.filename,
+                        int(record.timecodes),
+                        record.created_at,
+                        record.expires_at,
+                        None,
+                        None,
+                    ),
+                )
+            return ticket, record
+
+        return await asyncio.to_thread(_run)
+
+    async def claim_upload_ticket(self, ticket: str) -> Optional[UploadTicket]:
+        """Атомарно занять тикет под начинающийся PUT.
+
+        Один conditional UPDATE проверяет сразу: тикет существует, не истёк,
+        не использован и никем не занят. Проигравший гонку получает None.
+        """
+        if not ticket:
+            return None
+
+        def _run() -> Optional[UploadTicket]:
+            now = _now().isoformat()
+            ticket_hash = _sha256(ticket)
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE upload_tickets SET claimed_at=? "
+                    "WHERE ticket_hash=? AND claimed_at IS NULL AND used_at IS NULL "
+                    "AND expires_at>?",
+                    (now, ticket_hash, now),
+                )
+                if cur.rowcount == 0:
+                    return None
+                row = conn.execute(
+                    f"SELECT {_TICKET_COLUMNS} FROM upload_tickets WHERE ticket_hash=?",
+                    (ticket_hash,),
+                ).fetchone()
+            return self._ticket_row(row) if row else None
+
+        return await asyncio.to_thread(_run)
+
+    async def release_upload_ticket(self, ticket_id: str) -> None:
+        """Снять claim после обрыва/ошибки — тот же тикет годится для повтора.
+        Для уже использованного тикета — no-op."""
+
+        def _run() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE upload_tickets SET claimed_at=NULL "
+                    "WHERE id=? AND used_at IS NULL",
+                    (ticket_id,),
+                )
+
+        await asyncio.to_thread(_run)
+
+    async def mark_upload_ticket_used(self, ticket_id: str) -> None:
+        def _run() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE upload_tickets SET used_at=? WHERE id=?",
+                    (_now().isoformat(), ticket_id),
+                )
+
+        await asyncio.to_thread(_run)
+
+    async def count_active_upload_tickets(self, user_id: int) -> int:
+        def _run() -> int:
+            with self._connect() as conn:
+                return self._count_active_tickets(conn, user_id, _now().isoformat())
 
         return await asyncio.to_thread(_run)
 
     # -------------------------------------------------------------- test aid
+
+    async def _set_upload_ticket_expires_at(self, ticket_id: str, value: str) -> None:
+        def _run() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE upload_tickets SET expires_at=? WHERE id=?", (value, ticket_id)
+                )
+
+        await asyncio.to_thread(_run)
+
+    async def _set_upload_ticket_created_at(self, ticket_id: str, value: str) -> None:
+        def _run() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE upload_tickets SET created_at=? WHERE id=?", (value, ticket_id)
+                )
+
+        await asyncio.to_thread(_run)
 
     async def _set_expires_at(self, request_id: str, value: str) -> None:
         def _run() -> None:

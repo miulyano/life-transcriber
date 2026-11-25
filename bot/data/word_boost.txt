@@ -24,3 +24,26 @@ vibe-coding
 вайб-кодинг
 вайбкодинг
 вайб кодинг
+
+# --- Video / codecs ---
+AV1
+H.264
+H.265
+HEVC
+VP9
+VMAF
+SSIM
+PSNR
+HLS
+HLS.js
+транскодинг
+бандинг
+блокинг
+Smart TV
+Android TV
+Ватолин
+compression.ru
+Кинопоиск
+Okko
+VK Видео
+Confluence
